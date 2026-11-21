@@ -25,6 +25,7 @@ Translation/  翻译：Apple 本机翻译、DeepL、AITranslationEngine（翻译
 
 - **设置 › AI 服务**：端点列表，点按编辑，左滑删除，“添加服务…”。编辑页：名称、接口格式、常用预设、服务地址（实时预览请求地址）、API Key、模型（可从服务拉取列表）、测试（用 `AIPrompt.connectionTest` 请模型翻译一句短英文）、删除。
 - 各功能的设置页列出全部端点供选择，也可以直接“添加 AI 服务…”，从那里新建的端点保存后直接被该功能选中。
+- **提示词归功能，不归端点**：提示词的入口统一放在“设置 › AI 服务 › 提示词”，每个功能一行（现在只有“翻译”），所有端点通用；数据仍归功能自己：翻译的（`TranslationPrompts`，`UserDefaults` 键 `translationPromptTranslate` / `translationPromptExplain`，只存与默认不同的，留空即默认）。用户只能改“要求”部分；书中文字放在标签里、并提醒模型只当数据的那句由 app 固定附加，自定义提示词不会去掉这层防护。缓存键包含提示词，改了就不会拿到旧结果。
 
 ## 以后
 

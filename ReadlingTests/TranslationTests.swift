@@ -227,4 +227,26 @@ struct TranslationTests {
                                                "<word>hare</word>\n<sentence>The March Hare said.</sentence>"])
         #expect(client.prompts.allSatisfy { !$0.system.isEmpty })
     }
+
+    @Test func customPromptsPersistAndReachTheEndpoint() throws {
+        let suite = "prompts-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(TranslationPrompts(defaults: defaults) == .default)
+        var prompts = TranslationPrompts.default
+        prompts.translate = "  翻译成文言文。 "
+        prompts.save(to: defaults)
+        #expect(defaults.string(forKey: TranslationPrompts.translateKey) == "翻译成文言文。")
+        #expect(defaults.object(forKey: TranslationPrompts.explainKey) == nil)
+        #expect(TranslationPrompts(defaults: defaults).translate == "翻译成文言文。")
+
+        let custom = AITranslationEngine.prompt(for: .translate("Hi."), prompts: prompts)
+        #expect(custom.system.hasPrefix("翻译成文言文。\n"))
+        #expect(custom.system.contains("<text>"))
+        // A prompt cleared while editing falls back to the default rather than sending only the data note.
+        let blank = AITranslationEngine.prompt(for: .explain(word: "hare", sentence: "A hare."),
+                                               prompts: TranslationPrompts(translate: "", explain: "  "))
+        #expect(blank.system.hasPrefix(TranslationPrompts.defaultExplain))
+    }
 }

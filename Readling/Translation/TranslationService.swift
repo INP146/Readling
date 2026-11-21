@@ -111,6 +111,8 @@ final class TranslationService {
         var provider: TranslationProviderID
         /// Editing an endpoint (another model, another server) changes its answers.
         var endpoint: AIEndpoint?
+        /// So do the user's prompts; nil for services that don't take prompts.
+        var prompts: TranslationPrompts?
         var request: TranslationRequest
     }
 
@@ -123,6 +125,14 @@ final class TranslationService {
     }
 
     private(set) var deepLAddress: String
+
+    /// The instructions sent to AI endpoints, editable in Settings › AI 服务 › 提示词.
+    var prompts: TranslationPrompts {
+        didSet {
+            guard prompts != oldValue else { return }
+            prompts.save(to: defaults)
+        }
+    }
 
     let endpoints: AIEndpointStore
     private let defaults: UserDefaults
@@ -139,6 +149,7 @@ final class TranslationService {
         self.endpoints = endpoints ?? .shared
         self.customEngine = engines
         self.deepLAddress = defaults.string(forKey: Self.deepLAddressKey) ?? DeepLEngine.defaultBaseURL
+        self.prompts = TranslationPrompts(defaults: defaults)
         self.selection = defaults.string(forKey: Self.engineKey).flatMap(TranslationProviderID.init(rawValue:)) ?? .apple
     }
 
@@ -183,7 +194,7 @@ final class TranslationService {
             return DeepLEngine(configuration: DeepLEngine.configuration(address: deepLAddress, key: deepLKey))
         case .ai(let id):
             guard let client = endpoints.client(for: id) else { return UnconfiguredEngine(title: title(of: provider)) }
-            return AITranslationEngine(title: title(of: provider), client: client)
+            return AITranslationEngine(title: title(of: provider), client: client, prompts: prompts)
         }
     }
 
@@ -201,8 +212,9 @@ final class TranslationService {
                     let canExplain = instance.capabilities.contains(.explain)
                     let asked = Self.request(request, for: instance)
                     var endpoint: AIEndpoint?
-                    if case .ai(let id) = provider { endpoint = endpoints.endpoint(id) }
-                    let key = CacheKey(provider: provider, endpoint: endpoint, request: asked)
+                    var prompts: TranslationPrompts?
+                    if case .ai(let id) = provider { endpoint = endpoints.endpoint(id); prompts = self.prompts.resolved }
+                    let key = CacheKey(provider: provider, endpoint: endpoint, prompts: prompts, request: asked)
                     if let cached = cache[key] {
                         continuation.yield(Result(text: cached, provider: provider, providerTitle: instance.title,
                                                   canExplain: canExplain, isFinal: true, notice: notice()))

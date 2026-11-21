@@ -5,6 +5,7 @@ import SwiftUI
 struct AISettingsView: View {
     @State private var editing: AIEndpointEditorView.Mode?
     private let store = AIEndpointStore.shared
+    private let translation = TranslationService.shared
 
     var body: some View {
         SettingsList {
@@ -36,6 +37,15 @@ struct AISettingsView: View {
                 .accessibilityIdentifier("add-ai-endpoint")
             } footer: {
                 Text("添加大模型服务：官方 API、中转站，或局域网里的 Ollama、LM Studio 等。翻译等功能在各自的设置里选择用哪个服务。使用时，选中的文字和所在的句子会发给该服务，书的其余内容和生词本不会上传。")
+            }
+            Section {
+                NavigationLink {
+                    TranslationPromptsView()
+                } label: {
+                    LabeledContent("翻译", value: translation.prompts.resolved == .default ? String(localized: "默认") : String(localized: "已自定义"))
+                }
+            } header: { Text("提示词") } footer: {
+                Text("每个功能有自己的提示词，所有 AI 服务通用。")
             }
         }
         .navigationTitle("AI 服务")

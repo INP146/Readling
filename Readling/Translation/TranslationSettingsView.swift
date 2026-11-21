@@ -104,6 +104,40 @@ struct TranslationSettingsView: View {
     }
 }
 
+/// Settings › AI 服务 › 提示词 › 翻译: the instructions AI endpoints get for translating
+/// and for explaining a word in its sentence. Saved as the user types.
+struct TranslationPromptsView: View {
+    @Bindable private var service = TranslationService.shared
+
+    var body: some View {
+        SettingsList {
+            section(String(localized: "翻译句子"), text: $service.prompts.translate, fallback: TranslationPrompts.defaultTranslate,
+                    footer: String(localized: "用于翻译选中的句子和词典里没有的词组。"))
+            section(String(localized: "解释生词"), text: $service.prompts.explain, fallback: TranslationPrompts.defaultExplain,
+                    footer: String(localized: "用于结合所在句子解释词典里没有的词，结果显示在单词卡里，建议保持简短。"))
+            Section {
+                Button("全部恢复默认") { service.prompts = .default }
+                    .disabled(service.prompts.resolved == .default)
+            } footer: {
+                Text("选中的文字和句子由 app 放在标签里附在提示词之后，并提醒模型只把它们当作数据。留空等于使用默认提示词。")
+            }
+        }
+        .navigationTitle("翻译提示词")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func section(_ title: String, text: Binding<String>, fallback: String, footer: String) -> some View {
+        Section {
+            TextEditor(text: text)
+                .frame(minHeight: 120)
+                .scrollContentBackground(.hidden)
+                .accessibilityLabel(title)
+            Button("恢复默认") { text.wrappedValue = fallback }
+                .disabled(text.wrappedValue == fallback)
+        } header: { Text(verbatim: title) } footer: { Text(verbatim: footer) }
+    }
+}
+
 /// The DeepL service: official DeepL Free / Pro, or a self-hosted DeepLX address.
 struct DeepLSettingsView: View {
     var onSave: () -> Void = {}
