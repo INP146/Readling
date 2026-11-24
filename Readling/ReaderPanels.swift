@@ -257,7 +257,7 @@ struct ReaderSettingsPanel: View {
     }
 }
 
-/// The system segmented control at a chosen height. SwiftUI's segmented picker only comes in the fixed
+/// The system segmented control at a chosen height, on glass. SwiftUI's segmented picker only comes in the fixed
 /// control sizes, none of them as tall as the panel's other buttons; UIKit's stretches to its frame.
 struct SegmentedControl<Value: Hashable>: UIViewRepresentable {
     var items: [(title: String, value: Value)]
@@ -269,7 +269,18 @@ struct SegmentedControl<Value: Hashable>: UIViewRepresentable {
         // The panel's text size, which follows Dynamic Type like the rest of it.
         control.setTitleTextAttributes([.font: UIFont.preferredFont(forTextStyle: .subheadline)], for: .normal)
         control.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        Self.useGlass(control)
         return control
+    }
+
+    /// A glass track at rest like the panel's glass buttons, keeping the system's liquid selection thumb; by default the
+    /// track is a plain fill. There's no public switch: clearing the track through the appearance API also drops the
+    /// thumb. Should the private one go away, the control keeps its default look.
+    private static func useGlass(_ control: UISegmentedControl) {
+        let selector = NSSelectorFromString("_setUseGlass:")
+        guard control.responds(to: selector) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(control.method(for: selector), to: Setter.self)(control, selector, true)
     }
 
     func updateUIView(_ control: UISegmentedControl, context: Context) {

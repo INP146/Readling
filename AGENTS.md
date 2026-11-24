@@ -46,6 +46,7 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
 真机构建需在 Xcode 中为 target 设置 Development Team（项目未写死 Team）；没有开发者账号时，用外部工具 `iosign install`（`~/Projects/iosign`）以第三方证书重签安装。Bundle ID：`com.inp146.readling`。
 
 ## 约定
+- 用中文回答用户。
 - 界面文案为中文，放在 `Localizable.xcstrings`。
 - 测试按改动范围分级，提交前（或一组改动收尾时）跑一次完整测试：
   - 不碰正文的界面改动（文案、颜色、设置面板、生词本界面等）：构建或单元测试即可
@@ -64,3 +65,10 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
 ## 已知坑
 - 一个 `NSLayoutManager` 挂多个 `NSTextContainer` 时，只有显示第一个容器的 `UITextView` 能被选择，其余的 `isSelectable` 会被强制为 false（设为 true 也无效）。
 - `textViewDidChangeSelection`（iOS 26 模拟器实测）：拖选区手柄只在松手时回调一次；长按后不松手继续滑动会逐词回调，松手后约 7ms 还会再微调一次选区。
+- 系统控件的 iOS 26 液态玻璃样式没有公开开关时（例如 `UISegmentedControl` 静止时轨道是普通填充，`backgroundColor` 无效，`setBackgroundImage` 会让控件退回旧式绘制、连选中滑块一起丢掉）：
+  1. 用 `control.value(forKey: "recursiveDescription")` 把视图层级写到 `/tmp`，看清楚是哪一层在画；
+  2. 在模拟器运行时的 UIKitCore 里搜私有开关：`strings "$(find /Library/Developer/CoreSimulator/Volumes -path '*26*UIKitCore.framework/UIKitCore' | head -1)" | grep -i <控件名> | grep -iE 'glass|lens|transparent'`；
+  3. 运行时用 `responds(to:)` 确认，再逐个试，用临时 UI 测试截图（`XCUIScreen.mainScreen.screenshot` 写到 `/tmp`）对比，试完撤掉临时代码；
+  4. 带 `Bool` 参数的私有方法不能用 KVC（键名带下划线时会抛异常崩溃）或 `perform(_:with:)`，要取 `method(for:)` 转成 `@convention(c)` 函数调用。调用前先用 `responds(to:)` 检查，方法没了就保持默认样式。
+  
+  分段控件用的是 `_setUseGlass:`（见 `ReaderPanels.swift` 的 `SegmentedControl.useGlass`）。私有 API 上架 App Store 前需要重新评估。
