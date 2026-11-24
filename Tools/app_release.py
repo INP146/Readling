@@ -324,9 +324,12 @@ def prepare(root: Path, version: str, *, dry_run: bool = False, base_tag: str | 
     config = release_ai.load_config(root)
     if config.provider != "none":
         release_ai.validate_base_tag(root, previous, base_tag, kind="app")
+    else:
+        print("提示：当前 RELEASE_AI_PROVIDER=none（未配置 .env 或显式设为 none），仅生成静态模板")
     if dry_run:
         if config.provider != "none":
-            print(f"将调用 {config.provider} 生成发布说明草稿（dry-run 不调用模型）")
+            model_note = f" ({config.model})" if config.model else ""
+            print(f"将调用 {config.provider}{model_note} 生成发布说明草稿（dry-run 不调用模型）")
         return paths
 
     # Draft notes first: if the agent fails, project.pbxproj stays untouched.

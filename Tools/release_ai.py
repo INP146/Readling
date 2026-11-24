@@ -176,7 +176,7 @@ def generate(root: Path, version: str, previous: str | None, config: AIConfig, *
     if config.provider == "codex":
         command = [
             executable, "-a", "never", "exec", "--sandbox", "workspace-write",
-            "--cd", str(root), "--add-dir", str(path.parent), "--ephemeral", "--color", "never",
+            "--cd", str(root), "--add-dir", str(path.parent), "--ephemeral", "--color", "never", "--json",
         ]
     else:
         command = [
@@ -206,7 +206,22 @@ def generate(root: Path, version: str, previous: str | None, config: AIConfig, *
                 detail = f"：{str(reason)[:200]}" if reason else "；请检查 CLI 登录和模型配置"
                 raise ValueError(f"claude 生成失败{detail}（未修改版本文件）")
         elif result.returncode:
-            raise ValueError(f"{config.provider} 生成失败；请检查 CLI 登录和模型配置（未修改版本文件）")
+            reason = None
+            for line in reversed(result.stdout.splitlines()):
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict):
+                    err = event.get("error")
+                    if isinstance(err, dict) and err.get("message"):
+                        reason = err["message"]
+                        break
+                    if event.get("type") == "error" and event.get("message"):
+                        reason = event["message"]
+                        break
+            detail = f"：{str(reason)[:200]}" if reason else "；请检查 CLI 登录和模型配置"
+            raise ValueError(f"{config.provider} 生成失败{detail}（未修改版本文件）")
         if not path.is_file() or path.is_symlink():
             raise ValueError("Agent 未写入目标发布说明")
         content = path.read_text(encoding="utf-8")

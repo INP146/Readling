@@ -170,6 +170,18 @@ class GenerateTests(GitRepoTestCase):
         self.assertNotIn("secret", str(raised.exception))
         self.assertFalse((self.root / TARGET).exists())
 
+    def test_a_failed_codex_run_reports_its_reason(self):
+        def run(command, **kwargs):
+            if command[0] == "git":
+                return REAL_RUN(command, **kwargs)
+            event = {"type": "turn.failed", "error": {"message": '404 Not Found: Model "old-model" is not supported'}}
+            return subprocess.CompletedProcess(command, 1, json.dumps(event) + "\n", "secret stderr")
+
+        with self.assertRaisesRegex(ValueError, '404 Not Found: Model "old-model"') as raised:
+            self.generate("codex", run)
+        self.assertNotIn("secret", str(raised.exception))
+        self.assertFalse((self.root / TARGET).exists())
+
     def test_failed_or_malformed_drafts_are_removed(self):
         outcomes = {
             "no change": lambda path: None,
