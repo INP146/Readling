@@ -1034,13 +1034,40 @@ extension DictionaryEntry {
 @MainActor
 enum Pronunciation {
     private static let synthesizer = AVSpeechSynthesizer()
+    private static let session = SessionRelease()
 
     static func speak(_ text: String) {
+        // The default session category is silenced by the ring/silent switch, so a tap on the
+        // speaker button would do nothing on a muted phone. Play as spoken audio instead, ducking
+        // whatever else is playing and handing it back when done.
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? audio.setActive(true)
         let accent = UserDefaults.standard.string(forKey: "dictionaryAccent") ?? "en-US"
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: accent)
+        synthesizer.delegate = session
         synthesizer.stopSpeaking(at: .immediate)
         synthesizer.speak(utterance)
+    }
+
+    /// Deactivates the audio session once nothing is left to say, so ducked audio comes back.
+    private final class SessionRelease: NSObject, AVSpeechSynthesizerDelegate {
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+            release()
+        }
+
+        func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+            release()
+        }
+
+        private func release() {
+            // A cancel from stopSpeaking arrives while the next word is already queued.
+            Task { @MainActor in
+                guard !Pronunciation.synthesizer.isSpeaking else { return }
+                try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            }
+        }
     }
 }
 
