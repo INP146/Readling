@@ -25,7 +25,12 @@
     [_app launch];
     [[_app.buttons matchingPredicate:[NSPredicate predicateWithFormat:@"identifier BEGINSWITH 'book-'"]].firstMatch tap];
     XCUIElement *menu = _app.buttons[@"reader-menu"];
-    XCTAssertTrue([menu waitForExistenceWithTimeout:3]);
+    // A book opens with the toolbars put away; a tap on the text brings them up once the page is in.
+    for (int i = 0; i < 5 && !menu.exists; i++) {
+        [[self at:0.5 y:0.5] tap];
+        [menu waitForExistenceWithTimeout:1];
+    }
+    XCTAssertTrue(menu.exists);
     [menu tap];
     XCUIElement *chapters = _app.buttons[@"open-chapters"];
     XCTAssertTrue([chapters waitForExistenceWithTimeout:3]);
@@ -60,7 +65,12 @@
     [_app launch];
     [[_app.buttons matchingPredicate:[NSPredicate predicateWithFormat:@"identifier BEGINSWITH 'book-'"]].firstMatch tap];
     XCUIElement *menu = _app.buttons[@"reader-menu"];
-    XCTAssertTrue([menu waitForExistenceWithTimeout:3]);
+    // A book opens with the toolbars put away; a tap on the text brings them up once the page is in.
+    for (int i = 0; i < 5 && !menu.exists; i++) {
+        [[self at:0.5 y:0.5] tap];
+        [menu waitForExistenceWithTimeout:1];
+    }
+    XCTAssertTrue(menu.exists);
     [menu tap];
     XCUIElement *chapters = _app.buttons[@"open-chapters"];
     XCTAssertTrue([chapters waitForExistenceWithTimeout:3]);

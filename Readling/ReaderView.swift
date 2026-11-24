@@ -38,7 +38,7 @@ struct ReaderView: View {
     @State private var lookup: ReadingSelection?
     /// Where the lookup bubble may go, in global coordinates: inside the safe area and above the bottom bars.
     @State private var lookupArea: CGRect = .zero
-    @State private var chromeVisible = true
+    @State private var chromeVisible = false
     /// The floating menu button unfolded into its list of actions.
     @State private var menuOpen = false
     @Namespace private var glassSpace
