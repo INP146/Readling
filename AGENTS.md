@@ -54,6 +54,7 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
   - 分页/翻页：单元测试 + `-only-testing:ReadlingUITests/PagingUITests`
   - 选词/查词：单元测试 + `-only-testing:ReadlingUITests/SelectionUITests`
   - 反复迭代时可先 `build-for-testing`，再用 `test-without-building -only-testing:...` 省去编译；修某个失败用例时先只跑该用例（如 `.../SelectionUITests/testCurl`）
+- app 内的实质性改动（功能、界面、行为，不含纯文档/脚本/测试改动）完成并通过对应测试后，直接在仓库根目录运行 `iosign dev` 装到真机（开发版，Bundle ID 加 `.dev`，与正式版并存、数据隔离；不要用 `prod`），不用先问；设备没连接或签名失败时如实告知。
 
 ## 设计原则（教训）
 分页正文曾为求改动最小，让整章共享一条 `NSLayoutManager` 容器链、每页借一个容器显示；后来改为选中查词时才发现 UIKit 不允许这种页面被选择，只能层层打补丁。由此：
