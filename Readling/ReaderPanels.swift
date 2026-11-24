@@ -223,7 +223,7 @@ struct ReaderSettingsPanel: View {
                 .foregroundStyle(Color(hex: theme.ink))
                 .frame(width: 40, height: 40)
                 .background(Color(hex: theme.paper), in: Circle())
-                .overlay { Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: selected ? 2 : 1) }
+                .overlay { Circle().strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: 1) }
         }
         .accessibilityLabel(theme.isDark ? "夜间配色" : "日间配色")
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -249,7 +249,7 @@ struct ReaderSettingsPanel: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: selected ? 2 : 1)
+                        .strokeBorder(Color.primary.opacity(selected ? 0.9 : 0.15), lineWidth: 1)
                 }
         }
         .accessibilityLabel(item.title)
