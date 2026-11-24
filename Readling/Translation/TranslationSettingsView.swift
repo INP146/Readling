@@ -18,10 +18,6 @@ struct TranslationSettingsView: View {
                 row(.deepL, subtitle: service.isDeepLConfigured ? String(localized: "只翻译，不解释生词") : String(localized: "未配置"),
                     select: service.isDeepLConfigured ? nil : { editingDeepL = true },
                     edit: { editingDeepL = true })
-            } header: { Text("翻译服务") } footer: {
-                Text("所选服务请求失败或没有网络时，自动改用 Apple 本机翻译。")
-            }
-            Section {
                 ForEach(service.endpoints.endpoints) { endpoint in
                     row(.ai(endpoint.id), subtitle: endpoint.subtitle, edit: { editingEndpoint = .existing(endpoint) })
                 }
@@ -29,8 +25,8 @@ struct TranslationSettingsView: View {
                     Label("添加 AI 服务…", systemImage: "plus")
                 }
                 .accessibilityIdentifier("add-ai-endpoint")
-            } header: { Text("AI 服务") } footer: {
-                Text("大模型除了翻译句子，还能结合句子解释词典里没有的词。这里的服务与“设置 › AI 服务”里的是同一批。使用联网服务时，选中的文字和所在的句子会发给该服务，书的其余内容和生词本不会上传。")
+            } header: { Text("翻译服务") } footer: {
+                Text("AI 服务除了翻译句子，还能结合句子解释词典里没有的词，与“设置 › AI 服务”里的是同一批。所选服务请求失败或没有网络时，自动改用 Apple 本机翻译。使用联网服务时，选中的文字和所在的句子会发给该服务，书的其余内容和生词本不会上传。")
             }
             Section {
                 LabeledContent("英语 → 简体中文") {
