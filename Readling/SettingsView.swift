@@ -9,20 +9,20 @@ struct SettingsView: View {
             SettingsList {
                 Section {
                     NavigationLink { ReaderPreferencesView() } label: {
-                        SettingsIconLabel("阅读器设置", systemImage: "book.pages.fill", color: .orange)
+                        SettingsIconLabel("阅读器设置", systemImage: "book.pages.fill", color: .accent)
                     }
                     NavigationLink { DictionarySettingsView() } label: {
                         HStack {
-                            SettingsIconLabel("词典", systemImage: "character.book.closed.fill", color: .blue)
+                            SettingsIconLabel("词典", systemImage: "character.book.closed.fill", color: .accent)
                             Spacer()
                             if !DictionaryDownloads.shared.updates.isEmpty { UpdateBadge() }
                         }
                     }
                     NavigationLink { TranslationSettingsView() } label: {
-                        SettingsIconLabel("翻译", systemImage: "translate", color: .indigo)
+                        SettingsIconLabel("翻译", systemImage: "translate", color: .accent)
                     }
                     NavigationLink { AISettingsView() } label: {
-                        SettingsIconLabel("AI 服务", systemImage: "sparkles", color: .purple)
+                        SettingsIconLabel("AI 服务", systemImage: "sparkles", color: .accent)
                     }
                 }
                 Section {
@@ -53,9 +53,13 @@ private struct SettingsIconLabel: View {
         Label {
             Text(title)
         } icon: {
+            // Fit every glyph in the same box so wide ones like "translate" stay inside the square.
             Image(systemName: systemImage)
-                .font(.system(size: size * 0.55, weight: .semibold))
+                .resizable()
+                .scaledToFit()
+                .fontWeight(.semibold)
                 .foregroundStyle(.white)
+                .frame(width: size * 0.7, height: size * 0.6)
                 .frame(width: size, height: size)
                 .background(color.gradient, in: RoundedRectangle(cornerRadius: size * 0.23))
         }
