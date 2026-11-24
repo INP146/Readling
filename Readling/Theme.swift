@@ -16,7 +16,7 @@ extension UIColor {
     static let readerPaper = adaptive(light: 0xF7F4ED, dark: 0x191D1B)
     static let readerInk = adaptive(light: 0x292D28, dark: 0xECEFE6)
     static let readerAccent = adaptive(light: 0x286052, dark: 0x9CC7B0)
-    static let readerCard = adaptive(light: 0xFFFFFF, dark: 0x232826)
+    static let readerCard = adaptive(light: 0xFDFBF6, dark: 0x232826)
     static let readerHighlight = adaptive(light: 0xE8D6A0, dark: 0x5C5132)
     static let readerCover = UIColor(hex: 0x314F44)
 }
