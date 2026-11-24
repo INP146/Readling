@@ -1,0 +1,90 @@
+name: Publish app
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    uses: ./.github/workflows/validate-app.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
+  release:
+    name: Build IPA and create GitHub Release
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Select Xcode 26+
+        run: |
+          python3 - <<'PY'
+          import re, subprocess, sys
+          from pathlib import Path
+
+          def xcode_version(app: Path) -> tuple[int, ...]:
+              tool = app / "Contents/Developer/usr/bin/xcodebuild"
+              if not tool.is_file():
+                  return (0,)
+              out = subprocess.check_output([str(tool), "-version"], text=True)
+              match = re.search(r"Xcode (\d+(?:\.\d+)*)", out)
+              return tuple(int(part) for part in match.group(1).split(".")) if match else (0,)
+
+          developer_dir = Path(subprocess.check_output(["xcode-select", "-p"], text=True).strip())
+          current = developer_dir.parents[1]
+          candidates = sorted(Path("/Applications").glob("Xcode_26*.app"))
+          if current.exists() and current not in candidates:
+              candidates.append(current)
+          best = max(candidates, key=xcode_version) if candidates else current
+          version = xcode_version(best)
+          if version < (26, 0):
+              sys.exit(f"Requires Xcode 26+, found {version}")
+          if best != current:
+              subprocess.run(["sudo", "xcode-select", "-s", str(best / "Contents/Developer")], check=True)
+          subprocess.run(["xcodebuild", "-version"], check=True)
+          PY
+
+      - name: Validate tag and build unsigned Release IPA
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 Tools/app_release.py check "$RELEASE_TAG" --require-notes
+          python3 Tools/app_release.py build
+          (cd build/app && shasum -a 256 -c SHA256SUMS)
+
+      - name: Create GitHub Release with IPA and checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ipa="build/app/Readling-${version}.ipa"
+          flags=(--latest)
+          if [[ "$version" == *-rc* ]]; then
+            flags=(--prerelease --latest=false)
+          fi
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; keeping its notes and assets."
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "Readling $GITHUB_REF_NAME" \
+              --notes-file "docs/releases/$GITHUB_REF_NAME.md" \
+              "${flags[@]}" \
+              "$ipa" build/app/SHA256SUMS
+          fi

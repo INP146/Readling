@@ -22,12 +22,13 @@ iOS 英文阅读器（SwiftUI，iOS 26，Xcode 26.3+）。离线 EPUB/TXT 导入
 - `ReadlingTests/` 单元测试（`Fixtures/alice.epub` 为真实 Gutenberg EPUB）
 - `ReadlingUITests/` UI 测试：`SelectionUITests.m` 在四种翻页模式下翻页前后长按选词，要求弹出单词卡、点按后关闭，另有长按拖选多行、要求单词卡显示译文；`PagingUITests.m` 在仿真/平移/覆盖模式下连发快速滑动和点按（重叠的手势，跨章节），每轮后要求正常翻页逐页落地。用 XCUIAutomation 的私有事件合成（`XCSynthesizedEventRecord`），因为 XCUIElement 的手势会等应用空闲、无法重叠；该 API 不可用时测试会跳过。应用侧钩子：启动参数 `-freshLibrary` 使用临时空书库；`-dictionaryManifestURL <url>` 改用别的词典清单（可配合本地 `python3 -m http.server` 试下载）；分页正文的 `accessibilityIdentifier` 为 `page 章/总章 页/本章总页`；`-translationEngine stub` 改用返回固定文本的测试翻译引擎
 - `Tools/build-dictionary.py` 从 ECDICT CSV 生成词典包，每条只归入一个包（core/extended/八个学科/names），输出 `OUT_DIR/dictionary-<包>.sqlite`：`python3 -I Tools/build-dictionary.py ecdict.csv Readling/Resources core`（只重建内置核心包），不写包名则生成全部
-- `Tools/dictionary_release.py` 词典发布（prepare / check / build / adopt），`Dictionaries/release.json` 记录版本与固定的 ECDICT 数据源，`docs/releases/` 放发布说明；推送 `dict-*` tag 后由 `.github/workflows/publish-dictionaries.yml` 构建并创建 Release。`.env` 的 `RELEASE_AI_PROVIDER=codex|claude` 让 prepare 调用本机 CLI 起草发布说明（`Tools/release_ai.py`，模板见 `.env.example`）。流程见 `docs/release.md`，脚本测试：`python3 -m unittest discover -s Tools/tests`
+- `Tools/app_release.py` App 发布（prepare / check / build），以 `Readling.xcodeproj/project.pbxproj` 为版本唯一事实来源（SemVer，首次发版前为 `0.0.0`），推送 `v*.*.*` tag 后由 `.github/workflows/publish-app.yml` 在 `macos-26` 上跑测试、打未签名 `Readling-<版本>.ipa` 与 `SHA256SUMS` 并创建 GitHub Release
+- `Tools/dictionary_release.py` 词典发布（prepare / check / build / adopt），`Dictionaries/release.json` 记录版本与固定的 ECDICT 数据源，`docs/releases/` 放发布说明；推送 `dict-*` tag 后由 `.github/workflows/publish-dictionaries.yml` 构建并创建 Release。`.env` 的 `RELEASE_AI_PROVIDER=codex|claude` 让两者的 prepare 调用本机 CLI 起草发布说明（`Tools/release_ai.py`，模板见 `.env.example`）。流程见 `docs/release.md`，脚本测试：`python3 -m unittest discover -s Tools/tests`
 - `docs/screenshots/` 模拟器截图
 - `docs/dictionary-design.md` 词典分包、单词卡、下载的设计与实施进度
 - `docs/ai-design.md` AI 层（大模型端点）与各功能的分工
 - `docs/translation-design.md` 查不到时的翻译、可选翻译引擎（用户自带 Key）的设计与实施进度
-- `docs/release.md` 发布流程（现在是词典包，以后的 app 发布也写在这里）；`docs/releases/` 各 tag 的发布说明
+- `docs/release.md` App 与词典包的发布流程；`docs/releases/` 各 tag 的发布说明
 
 ## 构建与测试
 ```sh
