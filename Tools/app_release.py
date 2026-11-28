@@ -156,6 +156,11 @@ def scaffold_empty_migration(root: Path, from_version: str, to_version: str) -> 
     snapshot_text = f"""import Foundation
 
 /// The data {version_label(to_version)} writes. Frozen once {version_label(to_version)} is released (see docs/data-versioning.md).
+///
+/// Changes from v{from_version}: none yet.
+///
+/// To change a stored structure, replace its typealias with a copy of the struct from `{from_snap}` and change the
+/// copy (list the change above). Never use the app's live models here: snapshots of released versions must not change.
 enum {to_snap} {{
     typealias Library = {from_snap}.Library
     typealias Book = {from_snap}.Book
@@ -167,7 +172,14 @@ enum {to_snap} {{
 """
     migration_text = f"""import Foundation
 
-/// v{from_version} → {version_label(to_version)}: no source-data or reading-text changes.
+/// v{from_version} → {version_label(to_version)}.
+/// - Library: unchanged.
+/// - Settings: unchanged.
+/// - Reading text: not rebuilt.
+///
+/// This version's data changes go here (docs/data-versioning.md 3.3): convert source data from `{from_snap}` to
+/// `{to_snap}` through `context`, and ask for `.content` to be rebuilt when import builds text differently. Keep the
+/// list above up to date; it is what the release notes and the next reader go by.
 enum {mig_type} {{
     static let migration = Migration(from: "{from_version}", to: "{to_version}") {{ _ in }}
 }}

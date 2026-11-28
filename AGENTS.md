@@ -63,7 +63,12 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
 ## 数据版本与迁移（必读，v0.1.0 起已有用户数据）
 完整规范见 `docs/data-versioning.md`，改动任何会存到本机的东西之前先读。要点：
 - 数据分两类：**源数据**（书库 `library.json`、原书 `book.json`/`docs/`/`res/`、UserDefaults 设置、Keychain）丢了找不回，只能由迁移步骤转换；**派生数据**（`content.json` 正文、章节信息、封面缩略图）能从源数据算出来，不做格式转换，由迁移步骤要求重建。
-- 整个数据目录只有一个版本：最后迁移到的 app 版本（`data-version.json`）。迁移只在相邻的已发布版本之间进行（`Persistence/Migrations/Migration_<旧>_to_<新>.swift`，每对相邻版本恰好一个，没变化也写空步骤），跨版本升级依次执行，不写捷径步骤。开发中的下一版还没有版本号，写作 `next`（`VNext`、`Migration_<上一版>_to_Next`），到 `prepare` 时才改成实际版本号，不要自己猜版本号。
+- 整个数据目录只有一个版本：最后迁移到的 app 版本（`data-version.json`）。迁移只在相邻的已发布版本之间进行（`Persistence/Migrations/Migration_<旧>_to_<新>.swift`，每对相邻版本恰好一个，没变化也写空步骤），跨版本升级依次执行，不写捷径步骤。
+- 下一版的版本号到发布时才定。从 `DataVersion.chain` 的末项判断当前处在哪个阶段：
+  - **末项是 `next`（日常开发）**：数据改动写进 `Migration_<上一版>_to_Next.swift` 和 `Snapshots/VNext.swift`，文件开头的注释写了怎么改。要改某个存储结构，就把 `VNext` 里对应的 typealias 换成上一版结构的副本再改。这时 `project.pbxproj` 停在上一个已发布版本、开发版数据标为 `<上一版>+next`，都是有意的，不要去“修正”，也不要自己定版本号或新建带版本号的快照和步骤。
+  - **末项是版本号，且与 `project.pbxproj` 一致**：已经运行过 `prepare`，正在发版。若该版本已打 tag，下一步是在 tag 上运行 `post-release`，不要在这个状态下继续开发。
+  - 发版流程（`prepare` → 审阅说明 → 完整测试通过 → 提交 → 打 tag → Actions 成功 → `post-release`）见 `docs/release.md`。推送 tag 由用户决定，推送前要确认完整测试已经跑完并通过。
+- 有检查兜底：`python3 Tools/app_release.py check` 核对迁移链、快照、步骤、夹具、tag 与工程版本；`DataMigrationTests` 会在以下情况失败：正文输出变了但步骤没要求重建；`SettingsKeys` 与当前快照不一致；旧夹具迁移后不能被现行模型加载。新增可选字段不会被拦住，自己记得写进快照。
 - 步骤是纯函数，只用 `Persistence/Snapshots/` 里冻结的旧结构，不引用现行模型。版本发布后它的快照和步骤冻结，不再修改、不再删除；开发中的那一步可以随意改。
 - 以下改动都要写进开发中版本的迁移步骤：改了源数据的结构（包括新增字段、改 UserDefaults 键名或取值的含义）；改了导入/章节构建的输出（`BookImporter`、`BookBuilder`、`ChapterText`、`MathML`、`PlainTextLayout`、`ChapterLayout.split` 等），这时要在步骤里要求重建正文。测试会拿正文输出和上一个已发布版本的夹具比较，输出变了却没要求重建就会失败。
 - UserDefaults 键名只在 `SettingsKeys.swift` 定义；键名一旦发布就不再挪作他用。存下来的枚举要容忍未知值。

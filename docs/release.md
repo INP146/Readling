@@ -70,6 +70,17 @@ git add -A && git commit -m "Open development after v0.1.0" && git push origin m
 
 **失败与重跑**：在 GitHub Actions 的 `Publish app` 页面查看失败步骤；若因偶发环境问题失败可直接 Re-run failed jobs（已创建的 Release 不会被覆盖）。若代码、版本号或发布说明有误，修复后用下一个版本号（如 `0.1.0-rc2` 或 `0.1.1`）重新 `prepare` 发布。
 
+失败的 tag 已经合进 `main`，也算链上的一个版本（`check` 要求每个已合并的 `v*` tag 都在 `DataVersion.chain` 里，且有数据夹具），所以和成功的发布一样先收尾，再发下一个版本。v0.2.0 就是这样处理的：脚本测试失败，没有生成 Release，随后补发 v0.2.1。
+
+```sh
+# 在失败的 tag 上
+python3 Tools/app_release.py post-release v0.2.0
+git add -A && git commit -m "Open development after v0.2.0"
+# 修复问题并提交，然后照常 prepare 下一个版本。用户实际拿到的上一版仍是更早的版本，
+# 所以起草说明时用 --base-tag 指向它，并在说明里写明失败的那一版没有安装包
+python3 Tools/app_release.py prepare 0.2.1 --base-tag v0.1.0
+```
+
 ## 词典包
 
 数据与分包的设计见 `docs/dictionary-design.md`。
