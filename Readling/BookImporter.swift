@@ -42,14 +42,12 @@ enum BookImporter {
     private static let maximumEntries = 20_000
     private static let maximumTextBytes = 16 * 1_024 * 1_024
     /// One chapter document is parsed in memory.
-    private static let maximumDocumentBytes = 16 * 1_024 * 1_024
+    static let maximumDocumentBytes = 16 * 1_024 * 1_024
     private static let maximumDocumentsBytes = 64 * 1_024 * 1_024
     /// Room left on the device after unpacking.
     private static let spareBytes: Int64 = 64 << 20
-    /// Font obfuscation is not DRM: the text itself stays readable.
-    private static let obfuscationAlgorithms: Set<String> = ["http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"]
     /// Formats ImageIO can decode; SVG is not among them.
-    private static let drawableImageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "ico"]
+    static let drawableImageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "ico"]
 
     /// The SHA-256 of a file, read in chunks. Identical bytes are the same book under any name.
     static func fingerprint(of url: URL) throws -> String {
@@ -85,16 +83,19 @@ enum BookImporter {
         guard values.isRegularFile == true else { throw ImportError.unsupported }
         if let size = values.fileSize, UInt64(size) > maximumFileBytes { throw ImportError.tooLarge }
         let hash = try fingerprint ?? Self.fingerprint(of: url)
-        let title = url.deletingPathExtension().lastPathComponent
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        let (parsed, content, package, cover) = ext == "txt"
-            ? try importText(url, id: id, title: title, staging: staging)
-            : try importEPUB(url, id: id, fallbackTitle: title, staging: staging)
-        var book = parsed
-        book.chapters = content.chapterInfo
+        let package = ext == "txt" ? try unpackText(url, staging: staging) : try unpackEPUB(url, staging: staging)
+        // The text comes from the stored files, exactly as a rebuild would make it.
+        let directory = BookDirectory(url: staging)
+        let built = try BookBuilder.build(from: directory, package: package)
+        let cover = BookBuilder.cover(from: directory, package: package)
+        let fileTitle = url.deletingPathExtension().lastPathComponent
+        let title = built.title.flatMap { $0.isEmpty ? nil : $0 } ?? (fileTitle.isEmpty ? "Untitled" : fileTitle)
+        var book = ReaderBook(id: id, title: title, author: built.author, chapters: built.content.chapterInfo)
         book.coverAspectRatio = cover?.aspectRatio
         book.hasPackage = true
-        return ImportedBook(book: book, content: content, package: package, cover: cover?.jpeg, fingerprint: hash)
+        book.contentFile = BookDirectory.firstContentFile
+        return ImportedBook(book: book, content: built.content, package: package, cover: cover?.jpeg, fingerprint: hash)
     }
 
     static func decodeText(_ data: Data) -> String? {
@@ -108,29 +109,23 @@ enum BookImporter {
 
     // MARK: TXT
 
-    private static func importText(_ url: URL, id: UUID, title: String, staging: URL) throws -> (ReaderBook, BookContent, BookPackage, Cover?) {
+    /// The file itself is the whole book: chapter detection and the removal of license text change the text, so
+    /// the original is kept for export and for building the text again.
+    private static func unpackText(_ url: URL, staging: URL) throws -> BookPackage {
         if let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maximumTextBytes { throw ImportError.tooLarge }
         let data = try Data(contentsOf: url)
         guard data.count <= maximumTextBytes else { throw ImportError.tooLarge }
-        guard var text = decodeText(data), !text.contains("\0") else {
-            throw ImportError.corrupt("无法识别 TXT 的文字编码，请另存为 UTF-8 后再试。")
-        }
-        if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
-        text = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-        let chapters = try PlainTextLayout.chapters(from: text)
-        guard !chapters.isEmpty else { throw ImportError.empty }
-        // Chapter detection and the removal of license text change the text, so the file itself is kept for export.
         let resources = staging.appendingPathComponent("res", isDirectory: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
         try data.write(to: resources.appendingPathComponent("0"))
-        let package = BookPackage(kind: .text, entries: [.init(path: url.lastPathComponent, file: "0", isDocument: false)])
-        let book = ReaderBook(id: id, title: title.isEmpty ? "Untitled" : title, author: "", chapters: [])
-        return (book, BookContent(chapters: chapters), package, nil)
+        return BookPackage(kind: .text, entries: [.init(path: url.lastPathComponent, file: "0", isDocument: false)])
     }
 
     // MARK: EPUB
 
-    private static func importEPUB(_ url: URL, id: UUID, fallbackTitle: String, staging: URL) throws -> (ReaderBook, BookContent, BookPackage, Cover?) {
+    /// Checks the archive and stores every file of it: chapter documents that are well-formed XML as trees
+    /// (`docs/`), everything else byte for byte (`res/`), in the container's own order.
+    private static func unpackEPUB(_ url: URL, staging: URL) throws -> BookPackage {
         let archive: Archive
         do { archive = try Archive(url: url, accessMode: .read) }
         catch { throw ImportError.corrupt("文件不是有效的 EPUB（ZIP 压缩包损坏）。") }
@@ -184,153 +179,49 @@ enum BookImporter {
         guard String(data: mime, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) == "application/epub+zip" else {
             throw ImportError.corrupt("文件不是有效的 EPUB。")
         }
-        // Only content encrypted with a real cipher is DRM; font obfuscation is ignored.
-        var encrypted = Set<String>()
-        if let encryptionPath = entries.keys.first(where: { $0.lowercased() == "meta-inf/encryption.xml" }) {
-            guard let encryption = try? XMLTree.parse(resource(encryptionPath)) else { throw ImportError.encrypted }
-            for item in encryption.descendants("EncryptedData") {
-                let algorithm = item.descendants("EncryptionMethod").first?.attributes["Algorithm"] ?? ""
-                guard !obfuscationAlgorithms.contains(algorithm) else { continue }
-                for reference in item.descendants("CipherReference") {
-                    guard let uri = reference.attributes["URI"] else { continue }
-                    encrypted.insert((try? resolve(uri, relativeTo: "")) ?? uri)
-                }
-            }
-        }
-        let encryptedPaths = encrypted
-        let container = try XMLTree.parse(resource("META-INF/container.xml"))
-        guard let rootfile = container.descendants("rootfile").first(where: { $0.attributes["media-type"] == "application/oebps-package+xml" }),
-              let packagePath = rootfile.attributes["full-path"] else {
-            throw ImportError.corrupt("EPUB 缺少内容清单。")
-        }
-        let opfPath = try resolve(packagePath, relativeTo: "")
-        let package = try XMLTree.parse(resource(opfPath, limit: 8 * 1_024 * 1_024))
-        guard let metadata = package.descendants("metadata").first,
-              let manifest = package.descendants("manifest").first,
-              let spine = package.descendants("spine").first else {
-            throw ImportError.corrupt("EPUB 缺少书籍信息或阅读顺序。")
-        }
-        for meta in metadata.descendants("meta") {
-            if meta.attributes["property"] == "rendition:layout" && meta.plainText.trimmingCharacters(in: .whitespacesAndNewlines) == "pre-paginated" {
-                throw ImportError.fixedLayout
-            }
-            if meta.attributes["name"]?.lowercased() == "fixed-layout" && meta.attributes["content"]?.lowercased() == "true" {
-                throw ImportError.fixedLayout
-            }
-        }
-        struct Item {
-            let path: String
-            let media: String
-            let properties: Set<String>
-        }
-        var items: [String: Item] = [:]
-        for node in manifest.children where node.name == "item" {
-            guard let id = node.attributes["id"], let href = node.attributes["href"], items[id] == nil,
-                  let path = try? resolve(href, relativeTo: opfPath) else { continue }
-            items[id] = Item(path: path, media: node.attributes["media-type"] ?? "",
-                             properties: Set((node.attributes["properties"] ?? "").split(whereSeparator: \.isWhitespace).map(String.init)))
-        }
-        // Navigation only supplies titles; a broken table of contents must not block the book.
-        var titles: [String: String] = [:]
-        if let navigation = items.values.first(where: { $0.properties.contains("nav") }),
-           let nav = try? XMLTree.parse(resource(navigation.path)) {
-            let navigationNodes = nav.descendants("nav")
-            let toc = navigationNodes.first(where: { ($0.attribute("type") ?? "").split(separator: " ").contains("toc") }) ?? navigationNodes.first
-            for anchor in toc?.descendants("a") ?? [] {
-                guard let href = anchor.attributes["href"], let path = try? resolve(href, relativeTo: navigation.path) else { continue }
-                let title = PlainTextLayout.cleanLabel(anchor.plainText)
-                if titles[path] == nil && !title.isEmpty { titles[path] = title }
-            }
-        } else if let tocID = spine.attributes["toc"], let ncx = items[tocID], let nav = try? XMLTree.parse(resource(ncx.path)) {
-            for point in nav.descendants("navPoint") {
-                guard let content = point.children.first(where: { $0.name == "content" }),
-                      let href = content.attributes["src"], let label = point.children.first(where: { $0.name == "navLabel" }),
-                      let path = try? resolve(href, relativeTo: ncx.path) else { continue }
-                if titles[path] == nil { titles[path] = PlainTextLayout.cleanLabel(label.plainText) }
-            }
-        }
-
-        // Every file gets a stored name up front, so chapters can refer to images before they are unpacked.
-        var files: [String: String] = [:]
-        for (index, entry) in order.enumerated() where entry.type == .file { files[entry.path] = String(index) }
-        var mediaTypes: [String: String] = [:]
-        for item in items.values { mediaTypes[item.path] = item.media }
-        let storedFiles = files
-        let media = mediaTypes
-        func imageFile(_ path: String) -> String? {
-            guard let file = storedFiles[path], !encryptedPaths.contains(path) else { return nil }
-            let type = media[path] ?? ""
-            let ext = (path as NSString).pathExtension.lowercased()
-            guard ext != "svg", type != "image/svg+xml" else { return nil }
-            return type.hasPrefix("image/") || drawableImageExtensions.contains(ext) ? file : nil
+        let opf = try EPUBPackageDocument({ try resource($0, limit: $1) },
+                                          encryptionPath: entries.keys.first { $0.lowercased() == "meta-inf/encryption.xml" })
+        var chapterDocuments = Set<String>()
+        for item in opf.spine where entries[item.path] != nil {
+            guard !opf.encrypted.contains(item.path) else { throw ImportError.encrypted }
+            chapterDocuments.insert(item.path)
         }
 
         let documents = staging.appendingPathComponent("docs", isDirectory: true)
-        var documentFiles: [String: String] = [:]
-        var chapters: [ReaderChapter] = []
-        var contentBytes = 0
-        var visited = Set<String>()
-        var readable = 0
-        for reference in spine.children where reference.name == "itemref" {
-            try Task.checkCancellation()
-            if reference.attributes["linear"] == "no" { continue }
-            guard let id = reference.attributes["idref"], let item = items[id] else { continue }
-            guard ["application/xhtml+xml", "text/html", "application/xml", "text/xml"].contains(item.media) else { continue }
-            guard visited.insert(item.path).inserted, entries[item.path] != nil else { continue }
-            guard !encryptedPaths.contains(item.path) else { throw ImportError.encrypted }
-            let bytes = try resource(item.path, limit: maximumDocumentBytes)
-            contentBytes += bytes.count
-            guard contentBytes <= maximumDocumentsBytes else { throw ImportError.tooLarge }
-            let context = ChapterRenderer.Context(documentPath: item.path, imageFile: imageFile,
-                                                  resolve: { try? resolve($0, relativeTo: $1) })
-            guard let extracted = try chapterText(bytes, context: context) else { continue }
-            readable += 1
-            // A document that parsed as XML is stored as a tree; anything else stays as the bytes it came in.
-            if let document = extracted.document {
-                try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
-                let name = String(documentFiles.count)
-                try JSONEncoder().encode(document).write(to: documents.appendingPathComponent(name))
-                documentFiles[item.path] = name
-            }
-            if extracted.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
-            let imageOnly = extracted.text.allSatisfy { $0 == "\u{FFFC}" || $0.isWhitespace }
-            let title = [titles[item.path], extracted.heading, extracted.documentTitle].compactMap { $0 }.first(where: { !$0.isEmpty })
-                ?? (imageOnly ? "插图" : "Chapter \(chapters.count + 1)")
-            chapters += ChapterLayout.split(ReaderChapter(id: item.path, title: title, text: extracted.text, styles: extracted.styles,
-                                                          source: item.path, anchors: extracted.anchors))
-            guard chapters.count <= 2_000 else { throw ImportError.tooLarge }
-        }
-        guard !chapters.isEmpty else { throw readable == 0 && !visited.isEmpty ? ImportError.corrupt("书中的章节都无法解析。") : ImportError.empty }
-
-        // Everything else, in the container's own order, goes to disk as it is.
         let resources = staging.appendingPathComponent("res", isDirectory: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
         var packaged: [BookPackage.Entry] = []
-        for entry in order where entry.type == .file && entry.path != "mimetype" {
+        var documentCount = 0
+        var contentBytes = 0
+        for (index, entry) in order.enumerated() where entry.type == .file && entry.path != "mimetype" {
             try Task.checkCancellation()
-            if let document = documentFiles[entry.path] {
-                packaged.append(.init(path: entry.path, file: document, isDocument: true))
-            } else if let file = files[entry.path] {
+            let file = String(index)
+            guard chapterDocuments.contains(entry.path) else {
                 try unpack(entry, from: archive, to: resources.appendingPathComponent(file))
+                packaged.append(.init(path: entry.path, file: file, isDocument: false))
+                continue
+            }
+            let bytes = try resource(entry.path, limit: maximumDocumentBytes)
+            contentBytes += bytes.count
+            guard contentBytes <= maximumDocumentsBytes else { throw ImportError.tooLarge }
+            // A document that parses as XML is stored as a tree; anything else stays as the bytes it came in.
+            do {
+                let document = try XMLTree.parse(bytes)
+                try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+                let name = String(documentCount)
+                documentCount += 1
+                try JSONEncoder().encode(XMLDocumentFile(doctype: document.doctype, root: document)).write(to: documents.appendingPathComponent(name))
+                packaged.append(.init(path: entry.path, file: name, isDocument: true))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as XMLTree.UnsafeDocument {
+                throw ImportError.corrupt(error.reason)
+            } catch {
+                try bytes.write(to: resources.appendingPathComponent(file))
                 packaged.append(.init(path: entry.path, file: file, isDocument: false))
             }
         }
-
-        let title = metadata.descendants("title").first.map { PlainTextLayout.cleanLabel($0.plainText) } ?? ""
-        let authors = metadata.descendants("creator").map { PlainTextLayout.cleanLabel($0.plainText) }.filter { !$0.isEmpty }
-        let book = ReaderBook(id: id, title: title.isEmpty ? fallbackTitle : title, author: authors.joined(separator: ", "), chapters: [])
-        // EPUB 3 marks the cover in the manifest; EPUB 2 names it in <meta name="cover">.
-        // A missing or undecodable cover never blocks the book.
-        let coverName = metadata.descendants("meta").first { $0.attributes["name"]?.lowercased() == "cover" }?.attributes["content"]
-        let coverItem = items.values.first { $0.properties.contains("cover-image") }
-            ?? coverName.flatMap { name in items[name] ?? (try? resolve(name, relativeTo: opfPath)).flatMap { path in items.values.first { $0.path == path } } }
-        var cover: Cover?
-        if let coverItem, coverItem.media.hasPrefix("image/"), !encryptedPaths.contains(coverItem.path),
-           let bytes = try? resource(coverItem.path, limit: 16 * 1_024 * 1_024) {
-            try Task.checkCancellation()
-            cover = Cover(bytes)
-        }
-        return (book, BookContent(chapters: chapters), BookPackage(kind: .epub, entries: packaged), cover)
+        return BookPackage(kind: .epub, entries: packaged)
     }
 
     /// Writes one archive entry to `destination` chunk by chunk, checking its size and CRC as it goes.
@@ -384,67 +275,6 @@ enum BookImporter {
             jpeg = output as Data
             aspectRatio = min(1, max(0.5, Double(image.width) / Double(image.height)))
         }
-    }
-
-    // MARK: Chapter documents
-
-    private struct Rendered {
-        var text: String
-        var styles: [TextStyleRun]
-        var anchors: [String: Int]
-        var heading: String?
-        var documentTitle: String?
-        /// The parsed tree, when the document was well-formed XML.
-        var document: XMLDocumentFile?
-    }
-
-    /// Strict XHTML first; real-world tag soup falls back to the lenient scanner.
-    /// Returns nil only when neither can read the chapter.
-    private static func chapterText(_ bytes: Data, context: ChapterRenderer.Context) throws -> Rendered? {
-        do {
-            let document = try XMLTree.parse(bytes)
-            let body = document.descendants("body").first ?? document
-            var renderer = ChapterRenderer(context: context)
-            try render(body, into: &renderer)
-            let result = renderer.finish()
-            let heading = body.first(where: { ["h1", "h2", "h3"].contains($0.name) }).map { PlainTextLayout.cleanLabel($0.plainText) }
-            let documentTitle = document.first(where: { $0.name == "title" }).map { PlainTextLayout.cleanLabel($0.plainText) }
-            return Rendered(text: result.text, styles: result.styles, anchors: result.anchors, heading: heading,
-                            documentTitle: documentTitle, document: XMLDocumentFile(doctype: document.doctype, root: document))
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as XMLTree.UnsafeDocument {
-            throw ImportError.corrupt(error.reason)
-        } catch {
-            guard let source = decodeText(bytes) else { return nil }
-            let result = try LenientHTML.extract(source, context: context)
-            return Rendered(text: result.text, styles: result.styles, anchors: result.anchors, heading: nil, documentTitle: nil, document: nil)
-        }
-    }
-
-    static func render(_ node: XMLTree.Node, into renderer: inout ChapterRenderer) throws {
-        if Task.isCancelled { throw CancellationError() }
-        let name = node.name.lowercased()
-        if name == "svg" {
-            // Cover pages often wrap their picture in an svg; the pictures inside are drawn, the vector artwork is not.
-            for image in node.descendants("image") {
-                if let reference = image.attribute("href") { renderer.image(reference: reference, alt: node.attribute("aria-label")) }
-            }
-            return
-        }
-        if name == "math" || name.hasSuffix(":math") {
-            renderer.math(node)
-            return
-        }
-        guard renderer.enter(name, node.attributes) else { return }
-        for part in node.content {
-            switch part {
-            case .text(let value): renderer.text(value)
-            case .node(let child): try render(child, into: &renderer)
-            case .comment, .instruction: break
-            }
-        }
-        renderer.leave(name)
     }
 
     private static func validArchivePath(_ path: String) -> Bool {

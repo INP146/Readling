@@ -63,10 +63,17 @@ extension ReaderChapter {
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
         text = try container.decode(String.self, forKey: .text)
-        styles = try container.decodeIfPresent([TextStyleRun].self, forKey: .styles) ?? []
+        // A run this version doesn't understand is dropped rather than failing the chapter.
+        styles = try container.decodeIfPresent([Lossy<TextStyleRun>].self, forKey: .styles)?.compactMap(\.value) ?? []
         source = try container.decodeIfPresent(String.self, forKey: .source)
         anchors = try container.decodeIfPresent([String: Int].self, forKey: .anchors) ?? [:]
     }
+}
+
+/// Decodes an element of an array, or nothing when it can't: one unreadable entry doesn't fail the whole array.
+struct Lossy<Value: Decodable>: Decodable {
+    let value: Value?
+    init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
 }
 
 struct ChapterInfo: Codable, Equatable, Sendable {
@@ -87,6 +94,9 @@ struct ReaderBook: Codable, Identifiable, Equatable, Sendable {
     var coverAspectRatio: Double?
     /// True when the book was imported with everything needed to export it whole (see `BookPackage`).
     var hasPackage: Bool?
+    /// File name of the reading text under `books/<id>/`; nil for the sample, whose text is built in. Rebuilt text
+    /// goes to a new file, and the library switches to it in the same write that remaps offsets onto it.
+    var contentFile: String?
 
     var progress: Double {
         guard !chapters.isEmpty else { return 0 }
@@ -99,6 +109,8 @@ struct ReaderBook: Codable, Identifiable, Equatable, Sendable {
     }
 
     var canExport: Bool { hasPackage == true }
+    /// Whether the text can be built again from the stored original.
+    var canRebuild: Bool { hasPackage == true && !isSample }
     var isStarted: Bool { position.chapter > 0 || position.offset > 0 }
     var isFinished: Bool { progress >= 0.995 }
     var percentRead: Int { Int(progress * 100) }

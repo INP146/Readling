@@ -4,6 +4,8 @@ import SwiftUI
 /// The app's own Settings tab, laid out like the system Settings app but in
 /// the app's paper and card colors.
 struct SettingsView: View {
+    let store: LibraryStore
+
     var body: some View {
         NavigationStack {
             SettingsList {
@@ -26,7 +28,7 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    NavigationLink { AboutView() } label: {
+                    NavigationLink { AboutView(store: store) } label: {
                         SettingsIconLabel("关于", systemImage: "info", color: .gray)
                     }
                 }
@@ -85,20 +87,20 @@ private struct UpdateBadge: View {
 /// The same settings as the reader's own panel, sharing its stored values.
 /// Screen brightness stays in the reader: it only lasts while a book is open.
 struct ReaderPreferencesView: View {
-    @AppStorage("readerFont") private var fontSize = ReaderTypography.defaultSize
-    @AppStorage("readerTypeface") private var typeface = ReaderTypeface.newYork
-    @AppStorage("readerLineSpacing") private var lineSpacing = ReaderLayout.defaultLineSpacing
-    @AppStorage("readerParagraphSpacing") private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
-    @AppStorage("readerMargin") private var margin = ReaderLayout.defaultMargin
-    @AppStorage("readerAppearance") private var appearance = "system"
-    @AppStorage("readerDayTheme") private var dayTheme = ReaderTheme.defaultDay
-    @AppStorage("readerNightTheme") private var nightTheme = ReaderTheme.defaultNight
-    @AppStorage("readerBackdrop") private var backdrop = ReaderBackdrop.plain
-    @AppStorage("readerBackdropVersion") private var backdropVersion = 0
-    @AppStorage("readerPageTurn") private var pageTurn = PageTurn.scroll
-    @AppStorage("readerEyeCare") private var eyeCare = false
-    @AppStorage("readerAutoSpeed") private var autoSpeed = 3
-    @AppStorage("readerKeepAwake") private var keepAwake = false
+    @AppStorage(SettingsKeys.readerFont) private var fontSize = ReaderTypography.defaultSize
+    @AppStorage(SettingsKeys.readerTypeface) private var typeface = ReaderTypeface.newYork
+    @AppStorage(SettingsKeys.readerLineSpacing) private var lineSpacing = ReaderLayout.defaultLineSpacing
+    @AppStorage(SettingsKeys.readerParagraphSpacing) private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
+    @AppStorage(SettingsKeys.readerMargin) private var margin = ReaderLayout.defaultMargin
+    @AppStorage(SettingsKeys.readerAppearance) private var appearance = "system"
+    @AppStorage(SettingsKeys.readerDayTheme) private var dayTheme = ReaderTheme.defaultDay
+    @AppStorage(SettingsKeys.readerNightTheme) private var nightTheme = ReaderTheme.defaultNight
+    @AppStorage(SettingsKeys.readerBackdrop) private var backdrop = ReaderBackdrop.plain
+    @AppStorage(SettingsKeys.readerBackdropVersion) private var backdropVersion = 0
+    @AppStorage(SettingsKeys.readerPageTurn) private var pageTurn = PageTurn.scroll
+    @AppStorage(SettingsKeys.readerEyeCare) private var eyeCare = false
+    @AppStorage(SettingsKeys.readerAutoSpeed) private var autoSpeed = 3
+    @AppStorage(SettingsKeys.readerKeepAwake) private var keepAwake = false
     @State private var photo: PhotosPickerItem?
     @State private var photoError = false
 
@@ -250,8 +252,8 @@ private struct ReaderThemeSwatch: View {
 // MARK: Dictionary
 
 struct DictionarySettingsView: View {
-    @AppStorage("dictionaryExpandByDefault") private var expandByDefault = false
-    @AppStorage("dictionaryAccent") private var accent = "en-US"
+    @AppStorage(SettingsKeys.dictionaryExpandByDefault) private var expandByDefault = false
+    @AppStorage(SettingsKeys.dictionaryAccent) private var accent = "en-US"
     private let downloads = DictionaryDownloads.shared
 
     var body: some View {
@@ -395,6 +397,8 @@ struct DictionarySettingsView: View {
 // MARK: About
 
 struct AboutView: View {
+    let store: LibraryStore
+
     private var version: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -420,6 +424,9 @@ struct AboutView: View {
             }
             Section {
                 LabeledContent("版本", value: version)
+                NavigationLink { DataStatusView(store: store) } label: {
+                    LabeledContent("数据与升级") { DataStatusSummary(store: store) }
+                }
             }
             Section {
                 Text("书籍、阅读位置和生词都只保存在这台设备上，不会上传。删除应用会一并删除。")

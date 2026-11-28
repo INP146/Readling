@@ -9,16 +9,22 @@ struct ReaderRoute: Identifiable {
 }
 
 struct ContentView: View {
-    /// UI tests launch with `-freshLibrary` to start from an empty library of their own, leaving the reader's books
-    /// and places alone.
-    @State private var store = LibraryStore(fileURL: ProcessInfo.processInfo.arguments.contains("-freshLibrary")
-        ? URL.temporaryDirectory.appending(path: UUID().uuidString).appending(path: "library.json") : nil)
+    /// Made once by `ReadlingApp`: a store here would be made again each time the view is.
+    let store: LibraryStore
     @State private var tab = 0
     @State private var route: ReaderRoute?
     @Environment(\.scenePhase) private var scenePhase
     private let downloads = DictionaryDownloads.shared
 
     var body: some View {
+        if let version = store.newerDataVersion {
+            NewerDataView(store: store, version: version)
+        } else {
+            tabs
+        }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             Tab("书架", systemImage: "books.vertical", value: 0) {
                 LibraryView(store: store) { route = $0 }
@@ -28,7 +34,7 @@ struct ContentView: View {
             }
             .badge(store.favorites.filter { $0.isDue(at: .now) }.count)
             Tab("设置", systemImage: "gearshape", value: 2) {
-                SettingsView()
+                SettingsView(store: store)
             }
             .badge(downloads.updates.isEmpty ? 0 : 1)
         }
@@ -50,7 +56,7 @@ struct LibraryView: View {
     let store: LibraryStore
     var open: (ReaderRoute) -> Void
 
-    @AppStorage("lastReadBookID") private var lastReadBookID = ""
+    @AppStorage(SettingsKeys.lastReadBookID) private var lastReadBookID = ""
     @State private var choosingFile = false
     @State private var importTask: Task<Void, Never>?
     @State private var importingName: String?

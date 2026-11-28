@@ -255,5 +255,85 @@ class AppAgentDraftTests(unittest.TestCase):
             app_release.prepare(self.root, "0.1.1", dry_run=True)
 
 
+class DataVersioningReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.env = mock.patch.dict(os.environ, {"RELEASE_AI_PROVIDER": "none"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        setup_minimal_repo(self.root)
+        pbx = self.root / app_release.PBXPROJ
+        pbx.write_text(app_release.write_project_version(REAL_PBXPROJ, "0.1.0", 1), encoding="utf-8")
+        # Seed DataVersion at 0.1.0 -> 0.2.0 (rebuilding content) with a 0.1.0 fixture.
+        (self.root / app_release.SNAPSHOTS_DIR).mkdir(parents=True)
+        (self.root / app_release.MIGRATIONS_DIR).mkdir(parents=True)
+        (self.root / app_release.SNAPSHOTS_DIR / "V0_1_0.swift").write_text("enum V0_1_0 { static let settingsKeys: [String: String] = [:] }\n", encoding="utf-8")
+        (self.root / app_release.SNAPSHOTS_DIR / "V0_2_0.swift").write_text("enum V0_2_0 { static let settingsKeys = V0_1_0.settingsKeys }\n", encoding="utf-8")
+        (self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_0_2_0.swift").write_text(
+            'enum Migration_0_1_0_to_0_2_0 {\n'
+            '    static let migration = Migration(from: "0.1.0", to: "0.2.0") { ctx in ctx.requestRebuild(.content) }\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        (self.root / app_release.DATA_VERSION_FILE).write_text(
+            'enum DataVersion {\n'
+            '    static let chain = ["0.1.0", "0.2.0"]\n'
+            '    static let migrations: [Migration] = [\n'
+            '        Migration_0_1_0_to_0_2_0.migration,\n'
+            '    ]\n'
+            '    static let currentSettingsKeys = V0_2_0.settingsKeys\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        self._write_fixture("0.1.0")
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def _write_fixture(self, version: str) -> None:
+        bundle = app_release.fixture_bundle_path(self.root, version)
+        (bundle / "Readling").mkdir(parents=True)
+        (bundle / "Readling/library.json").write_text('{"version":2}\n', encoding="utf-8")
+        (bundle / "settings.plist").write_text("<plist version=\"1.0\"><dict/></plist>\n", encoding="utf-8")
+
+    def test_real_repo_passes_check(self):
+        real_root = Path(__file__).resolve().parents[2]
+        version, build = app_release.check(real_root)
+        self.assertTrue(version)
+        self.assertGreaterEqual(build, 1)
+
+    def test_prepare_with_open_migration_enforces_rebuild_note_and_scaffolds_next_empty_step(self):
+        self.assertEqual(app_release.check(self.root), ("0.1.0", 1))
+        # Cannot prepare 0.1.1 when DataVersion.chain already opened 0.2.0.
+        with self.assertRaisesRegex(ValueError, "当前末端版本为 0.2.0"):
+            app_release.prepare(self.root, "0.1.1")
+
+        # Prepare 0.2.0: uses existing Migration_0_1_0_to_0_2_0 and includes rebuild notice in template.
+        app_release.prepare(self.root, "0.2.0")
+        notes = app_release.notes_path(self.root, "0.2.0")
+        self.assertIn("自动更新正文", notes.read_text(encoding="utf-8"))
+        complete_notes(notes)
+        self.assertEqual(app_release.check(self.root, "v0.2.0", require_notes=True), ("0.2.0", 2))
+
+        # Removing the rebuild notice fails check --require-notes because Migration_0_1_0_to_0_2_0 requests .content.
+        stripped = notes.read_text(encoding="utf-8").replace("首次打开后，已导入的书籍会在后台自动更新正文，阅读进度与生词位置会自动换算。", "")
+        notes.write_text(stripped, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "要求重建正文"):
+            app_release.check(self.root, "v0.2.0", require_notes=True)
+
+        # Next release 0.2.1 requires 0.2.0.bundle to exist first, then scaffolds empty step & snapshot.
+        with self.assertRaisesRegex(ValueError, "0.2.0.bundle"):
+            app_release.prepare(self.root, "0.2.1")
+        self._write_fixture("0.2.0")
+        modified = app_release.prepare(self.root, "0.2.1")
+        self.assertEqual(len(modified), 5)
+        complete_notes(app_release.notes_path(self.root, "0.2.1"))
+        self.assertEqual(app_release.check(self.root, "v0.2.1", require_notes=True), ("0.2.1", 3))
+        chain, migs, keys_snap = app_release.read_data_version(self.root)
+        self.assertEqual(chain, ["0.1.0", "0.2.0", "0.2.1"])
+        self.assertEqual(migs, ["Migration_0_1_0_to_0_2_0", "Migration_0_2_0_to_0_2_1"])
+        self.assertEqual(keys_snap, "V0_2_1")
+
+
 if __name__ == "__main__":
     unittest.main()

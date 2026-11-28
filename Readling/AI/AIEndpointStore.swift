@@ -6,7 +6,7 @@ import Observation
 @Observable @MainActor
 final class AIEndpointStore {
     static let shared = AIEndpointStore()
-    static let endpointsKey = "aiEndpoints"
+    static let endpointsKey = SettingsKeys.aiEndpoints
 
     private(set) var endpoints: [AIEndpoint]
 

@@ -174,7 +174,7 @@ enum ReaderBackdrop: String, CaseIterable, Identifiable {
     }
 
     @MainActor private static var imageCache: (version: Int, image: UIImage?)?
-    @MainActor static var customImageVersion: Int { UserDefaults.standard.integer(forKey: "readerBackdropVersion") }
+    @MainActor static var customImageVersion: Int { UserDefaults.standard.integer(forKey: SettingsKeys.readerBackdropVersion) }
 
     /// Callers bump `readerBackdropVersion` afterwards so cached images and views refresh.
     @MainActor static func saveCustomImage(_ data: Data) throws {

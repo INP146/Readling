@@ -23,7 +23,7 @@ struct BookPackage: Codable, Sendable {
 
 /// Where one book's files live.
 ///
-///     content.json   chapter text and styles, what the reader opens
+///     content*.json  chapter text and styles, what the reader opens (derived; the library names the current one)
 ///     book.json      the BookPackage
 ///     cover.jpg      shelf thumbnail
 ///     docs/<n>.json  one parsed chapter document each
@@ -31,7 +31,21 @@ struct BookPackage: Codable, Sendable {
 struct BookDirectory: Sendable {
     let url: URL
 
-    var content: URL { url.appendingPathComponent("content.json") }
+    /// The reading text a book is imported with; text rebuilt later goes to `content-<n>.json`.
+    static let firstContentFile = "content.json"
+
+    func content(_ file: String) -> URL { url.appendingPathComponent(file) }
+
+    /// Reading-text files present, current or not.
+    func contentFiles() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []).filter { $0.hasPrefix("content") && $0.hasSuffix(".json") }
+    }
+
+    /// A name no reading-text file has yet.
+    func nextContentFile() -> String {
+        let numbers = contentFiles().compactMap { Int($0.dropFirst("content-".count).dropLast(".json".count)) }
+        return "content-\((numbers.max() ?? 0) + 1).json"
+    }
     var package: URL { url.appendingPathComponent("book.json") }
     var cover: URL { url.appendingPathComponent("cover.jpg") }
     var documents: URL { url.appendingPathComponent("docs", isDirectory: true) }

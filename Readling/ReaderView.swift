@@ -12,22 +12,22 @@ struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var systemScheme
-    @AppStorage("lastReadBookID") private var lastReadBookID = ""
-    @AppStorage("readerFont") private var fontSize = ReaderTypography.defaultSize
-    @AppStorage("readerTypeface") private var typeface = ReaderTypeface.newYork
-    @AppStorage("readerLineSpacing") private var lineSpacing = ReaderLayout.defaultLineSpacing
-    @AppStorage("readerParagraphSpacing") private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
-    @AppStorage("readerMargin") private var margin = ReaderLayout.defaultMargin
-    @AppStorage("readerAppearance") private var appearance = "system"
-    @AppStorage("readerDayTheme") private var dayTheme = ReaderTheme.defaultDay
-    @AppStorage("readerNightTheme") private var nightTheme = ReaderTheme.defaultNight
-    @AppStorage("readerBackdrop") private var backdrop = ReaderBackdrop.plain
-    @AppStorage("readerBackdropVersion") private var backdropVersion = 0
-    @AppStorage("readerPageTurn") private var pageTurn = PageTurn.scroll
-    @AppStorage("readerEyeCare") private var eyeCare = false
-    @AppStorage("readerAutoSpeed") private var autoSpeed = 3
-    @AppStorage("readerKeepAwake") private var keepAwake = false
-    @AppStorage("readerTipSeen") private var tipSeen = false
+    @AppStorage(SettingsKeys.lastReadBookID) private var lastReadBookID = ""
+    @AppStorage(SettingsKeys.readerFont) private var fontSize = ReaderTypography.defaultSize
+    @AppStorage(SettingsKeys.readerTypeface) private var typeface = ReaderTypeface.newYork
+    @AppStorage(SettingsKeys.readerLineSpacing) private var lineSpacing = ReaderLayout.defaultLineSpacing
+    @AppStorage(SettingsKeys.readerParagraphSpacing) private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
+    @AppStorage(SettingsKeys.readerMargin) private var margin = ReaderLayout.defaultMargin
+    @AppStorage(SettingsKeys.readerAppearance) private var appearance = "system"
+    @AppStorage(SettingsKeys.readerDayTheme) private var dayTheme = ReaderTheme.defaultDay
+    @AppStorage(SettingsKeys.readerNightTheme) private var nightTheme = ReaderTheme.defaultNight
+    @AppStorage(SettingsKeys.readerBackdrop) private var backdrop = ReaderBackdrop.plain
+    @AppStorage(SettingsKeys.readerBackdropVersion) private var backdropVersion = 0
+    @AppStorage(SettingsKeys.readerPageTurn) private var pageTurn = PageTurn.scroll
+    @AppStorage(SettingsKeys.readerEyeCare) private var eyeCare = false
+    @AppStorage(SettingsKeys.readerAutoSpeed) private var autoSpeed = 3
+    @AppStorage(SettingsKeys.readerKeepAwake) private var keepAwake = false
+    @AppStorage(SettingsKeys.readerTipSeen) private var tipSeen = false
 
     @State private var content: BookContent?
     @State private var loadError: String?
@@ -158,7 +158,8 @@ struct ReaderView: View {
             } else if let loadError {
                 ContentUnavailableView("无法打开这本书", systemImage: "exclamationmark.triangle", description: Text(loadError))
             } else {
-                ProgressView("正在打开…")
+                // A book whose text a migration asked to rebuild is rebuilt before it opens.
+                ProgressView(store.rebuild.pending.contains(bookID) ? "正在按新版本更新这本书…" : "正在打开…")
             }
         }
     }
@@ -751,7 +752,7 @@ struct LookupCard: View {
     var palette = ReaderPalette(day: ReaderTheme.defaultDay, night: ReaderTheme.defaultNight)
     /// Passes the machine translation shown in place of a dictionary entry, to keep with the saved word.
     var onToggleSaved: ((text: String, source: String)?) -> Void
-    @AppStorage("dictionaryExpandByDefault") private var expandByDefault = false
+    @AppStorage(SettingsKeys.dictionaryExpandByDefault) private var expandByDefault = false
     @AppStorage(TranslationService.automaticKey) private var automaticTranslation = true
     @State private var expanded: Bool?
     @State private var openPhrases: Set<String> = []
@@ -1043,7 +1044,7 @@ enum Pronunciation {
         let audio = AVAudioSession.sharedInstance()
         try? audio.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? audio.setActive(true)
-        let accent = UserDefaults.standard.string(forKey: "dictionaryAccent") ?? "en-US"
+        let accent = UserDefaults.standard.string(forKey: SettingsKeys.dictionaryAccent) ?? "en-US"
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: accent)
         synthesizer.delegate = session

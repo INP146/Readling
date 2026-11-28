@@ -1,0 +1,84 @@
+import Foundation
+import Testing
+@testable import Readling
+
+/// Generates the v0.1.0 data fixture with v0.1.0's own code (run on the v0.1.0 tag, see GENERATE.md).
+/// Output: $FIXTURE_OUT (default /tmp/readling-fixture-0.1.0) holding `Readling/` (the app's data directory)
+/// and `settings.plist` (the UserDefaults the app had set).
+@MainActor @Test func generateDataFixture() async throws {
+    let out = URL(fileURLWithPath: ProcessInfo.processInfo.environment["FIXTURE_OUT"] ?? "/tmp/readling-fixture-0.1.0")
+    try? FileManager.default.removeItem(at: out)
+    let data = out.appendingPathComponent("Readling", isDirectory: true)
+    try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+    let store = LibraryStore(fileURL: data.appendingPathComponent("library.json"))
+
+    let bundle = Bundle(for: FixtureMarker.self)
+    func fixture(_ name: String, _ ext: String) throws -> URL {
+        try #require(bundle.url(forResource: name, withExtension: ext) ?? bundle.url(forResource: name, withExtension: ext, subdirectory: "Fixtures"))
+    }
+    let alice = try await store.importBook(url: try fixture("alice", "epub"))
+    let formulas = try await store.importBook(url: try fixture("formulas", "epub"))
+    let verse = try await store.importBook(url: try fixture("verse", "txt"))
+
+    /// Saves a word where it occurs (the nth time) in a chapter, the way the reader does: offset of the selection,
+    /// the sentence around it.
+    func save(_ book: UUID, chapter: Int, _ word: String, sentence: String, translation: (String, String)? = nil) async throws -> UUID {
+        let item = try #require(store.books.first { $0.id == book })
+        let text = try await store.content(for: item).chapters[chapter].text as NSString
+        let range = text.range(of: word)
+        #expect(range.location != NSNotFound, "\(word)")
+        #expect(store.savePassage(bookID: book, chapter: chapter, offset: range.location, selection: word, sentence: sentence,
+                                  translation: translation) == .saved)
+        return try #require(store.favorites.first).id
+    }
+
+    func offset(of word: String, in book: UUID, chapter: Int) async throws -> Int {
+        let item = try #require(store.books.first { $0.id == book })
+        return (try await store.content(for: item).chapters[chapter].text as NSString).range(of: word).location
+    }
+
+    // Words after formulas and tables, whose offsets move when chapters are rebuilt with them.
+    let curious = try await save(formulas, chapter: 0, "curious", sentence: "She looked at the curious formula and smiled, because the meaning was suddenly plain.")
+    _ = try await save(formulas, chapter: 0, "suddenly plain", sentence: "She looked at the curious formula and smiled, because the meaning was suddenly plain.",
+                       translation: ("突然变得清楚", "机器翻译 · Apple 本机翻译"))
+    let ledger = try await save(formulas, chapter: 1, "balanced", sentence: "At the end of the day the ledger balanced, and the shopkeeper was content.")
+    _ = try await save(verse, chapter: 0, "traveller", sentence: "A traveller came along the road and paused beside the gate, wondering whether anyone was home.")
+    _ = try await save(alice, chapter: 2, "rabbit", sentence: "")
+    store.review(id: curious, remembered: true)
+    store.setMastered(id: ledger, true)
+
+    store.savePosition(bookID: formulas, chapter: 1, offset: try await offset(of: "Nothing else happened", in: formulas, chapter: 1), fraction: 0.9)
+    store.savePosition(bookID: verse, chapter: 1, offset: try await offset(of: "They talked", in: verse, chapter: 1))
+    store.savePosition(bookID: alice, chapter: 3, offset: 120)
+    store.persist()
+
+    let endpoint = AIEndpoint(name: "Fixture", format: .openAI, baseURL: "https://example.com/v1", model: "fixture-model")
+    let settings: [String: Any] = [
+        "readerFont": ReaderTypography.defaultSize + 2,
+        "readerTypeface": ReaderTypeface.georgia.rawValue,
+        "readerLineSpacing": 1.5,
+        "readerParagraphSpacing": 1.0,
+        "readerMargin": 30.0,
+        "readerAppearance": "dark",
+        "readerDayTheme": ReaderTheme.defaultDay,
+        "readerNightTheme": ReaderTheme.defaultNight,
+        "readerBackdrop": ReaderBackdrop.linen.rawValue,
+        "readerPageTurn": PageTurn.curl.rawValue,
+        "readerEyeCare": true,
+        "readerAutoSpeed": 4,
+        "readerKeepAwake": true,
+        "dictionaryExpandByDefault": true,
+        "dictionaryAccent": "en-GB",
+        "lastReadBookID": formulas.uuidString,
+        "translationEngine": TranslationProviderID.ai(endpoint.id).rawValue,
+        "translationAutomatic": false,
+        "translationDeepLAddress": "https://api-free.deepl.com",
+        "translationPromptTranslate": "Translate into Chinese: {text}",
+        "aiEndpoints": try JSONEncoder().encode([endpoint]),
+    ]
+    try PropertyListSerialization.data(fromPropertyList: settings, format: .xml, options: 0)
+        .write(to: out.appendingPathComponent("settings.plist"))
+    print("FIXTURE written to \(out.path)")
+}
+
+private final class FixtureMarker {}

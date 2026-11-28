@@ -102,7 +102,7 @@ final class DictionaryDownloads {
     static let shared = DictionaryDownloads()
 
     /// UI tests and local trials launch with `-dictionaryManifestURL <url>` to use another catalog.
-    static let manifestURL = UserDefaults.standard.string(forKey: "dictionaryManifestURL").flatMap(URL.init(string:))
+    static let manifestURL = UserDefaults.standard.string(forKey: SettingsKeys.dictionaryManifestURL).flatMap(URL.init(string:))
         ?? URL(string: "https://raw.githubusercontent.com/INP146/Readling/main/Dictionaries/manifest.json")!
 
     enum Status: Equatable {

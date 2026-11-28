@@ -100,9 +100,9 @@ final class TranslationService {
         var notice: String?
     }
 
-    static let engineKey = "translationEngine"
-    static let automaticKey = "translationAutomatic"
-    static let deepLAddressKey = "translationDeepLAddress"
+    static let engineKey = SettingsKeys.translationEngine
+    static let automaticKey = SettingsKeys.translationAutomatic
+    static let deepLAddressKey = SettingsKeys.translationDeepLAddress
     static let deepLAccount = "deepL"
     nonisolated static let source = Locale.Language(identifier: "en")
     nonisolated static let target = Locale.Language(identifier: "zh-Hans")

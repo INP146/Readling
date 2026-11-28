@@ -13,42 +13,91 @@ final class LibraryStore {
     /// until the reader chooses to retry or to set the unreadable file aside.
     private(set) var readFailure: String?
 
+    /// The newer app version the saved data belongs to. Nothing is read or written then: like iOS, the app doesn't
+    /// go back a version with its data (see docs/data-versioning.md 3.6).
+    private(set) var newerDataVersion: String?
+    /// What bringing the data up to date did at launch.
+    private(set) var migrationOutcome: Migrator.Outcome = .upToDate
+    /// Reading text being rebuilt from the stored originals after a migration asked for it.
+    private(set) var rebuild = RebuildStatus()
+
+    struct RebuildStatus: Equatable {
+        /// Books still to rebuild, in order.
+        var pending: [UUID] = []
+        /// How many books this round started with.
+        var total = 0
+        /// The book being rebuilt now.
+        var current: UUID?
+        var failures: [UUID: String] = [:]
+        var isFinished: Bool { pending.isEmpty && current == nil }
+        var done: Int { max(0, total - pending.count - (current == nil ? 0 : 1)) }
+    }
+
     @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored let settings: SettingsDomain
     @ObservationIgnored private var fingerprints: [String: UUID] = [:]
     @ObservationIgnored private var pendingPositionSave: Task<Void, Never>?
     @ObservationIgnored private var contentCache: (id: UUID, content: BookContent)?
+    @ObservationIgnored private var rebuildTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var rebuildWorker: Task<Void, Never>?
 
     static let reviewIntervals: [Double] = [1, 2, 4, 7, 15, 30] // days
+    /// The `version` of `library.json` this app writes (see `V0_2_0.Library`).
+    nonisolated static let libraryVersion = 3
 
     private struct Snapshot: Codable {
-        var version: Int = 2
+        var version: Int = LibraryStore.libraryVersion
         var books: [ReaderBook]
         var favorites: [SavedPassage]
         var fingerprints: [String: UUID]
     }
 
-    init(fileURL: URL? = nil) {
+    /// `fileURL` is `library.json` inside the data directory, which also holds the books and the migration state.
+    init(fileURL: URL? = nil, settings: SettingsDomain = .standard) {
         self.fileURL = fileURL ?? URL.appData.appendingPathComponent("library.json")
+        self.settings = settings
+        start()
+    }
+
+    private func start() {
+        migrationOutcome = migrator.run()
+        switch migrationOutcome {
+        case .tooNew(let version):
+            newerDataVersion = version
+            return
+        case .failed(_, let reason):
+            readFailure = "无法升级已保存的数据，原文件没有被改动。\(reason)"
+            return
+        case .fresh, .upToDate, .migrated:
+            break
+        }
         load()
         // An import that was interrupted leaves its unpacked files behind.
         for name in (try? FileManager.default.contentsOfDirectory(atPath: booksDirectory.path)) ?? [] where name.hasSuffix(".partial") {
             try? FileManager.default.removeItem(at: booksDirectory.appendingPathComponent(name))
         }
+        if readFailure == nil { resumeRebuilding() }
     }
 
-    private var booksDirectory: URL { fileURL.deletingLastPathComponent().appendingPathComponent("books", isDirectory: true) }
+    private var dataDirectory: URL { fileURL.deletingLastPathComponent() }
+
+    private var booksDirectory: URL { dataDirectory.appendingPathComponent("books", isDirectory: true) }
+
+    var migrator: Migrator { Migrator(directory: dataDirectory, settings: settings) }
+
+    /// The version the data is at, for the 数据与升级 page.
+    var dataVersionLabel: String {
+        switch migrationOutcome {
+        case .tooNew(let version): version
+        case .failed(let from, _): "\(from)（未升级）"
+        case .fresh, .upToDate, .migrated: DataVersion.current
+        }
+    }
 
     func directory(for id: UUID) -> BookDirectory { BookDirectory(url: booksDirectory.appendingPathComponent(id.uuidString, isDirectory: true)) }
 
-    // Books imported before each had a directory kept text and cover beside it, in files named for the book.
-    private func legacyContentURL(for id: UUID) -> URL { booksDirectory.appendingPathComponent("\(id.uuidString).json") }
-
-    private func legacyCoverURL(for id: UUID) -> URL { booksDirectory.appendingPathComponent("\(id.uuidString)-cover.jpg") }
-
     func coverURL(for book: ReaderBook) -> URL? {
-        guard book.coverAspectRatio != nil else { return nil }
-        let current = directory(for: book.id).cover
-        return FileManager.default.fileExists(atPath: current.path) ? current : legacyCoverURL(for: book.id)
+        book.coverAspectRatio == nil ? nil : directory(for: book.id).cover
     }
 
     /// Where the book's images are, for drawing them; nil for the sample.
@@ -63,12 +112,34 @@ final class LibraryStore {
     // MARK: Loading and recovery
 
     func retryLoading() {
+        rebuildWorker?.cancel()
+        rebuildWorker = nil
+        for task in rebuildTasks.values { task.cancel() }
+        rebuildTasks = [:]
         readFailure = nil
         errorMessage = nil
+        newerDataVersion = nil
         books = []
         favorites = []
         fingerprints = [:]
-        load()
+        contentCache = nil
+        rebuild = RebuildStatus()
+        start()
+    }
+
+    /// Moves the whole data directory aside (never deletes it) and starts afresh. The way out when the data belongs
+    /// to a newer version of the app.
+    func setAsideNewerData() {
+        let stamp = ISO8601DateFormatter().string(from: .now).replacingOccurrences(of: ":", with: "-")
+        let aside = dataDirectory.deletingLastPathComponent()
+            .appendingPathComponent("\(dataDirectory.lastPathComponent)-\(newerDataVersion ?? "newer")-\(stamp)", isDirectory: true)
+        do {
+            try FileManager.default.moveItem(at: dataDirectory, to: aside)
+        } catch {
+            errorMessage = "无法移动这些数据，请检查储存空间后重试。"
+            return
+        }
+        retryLoading()
     }
 
     /// Moves the unreadable file aside (never deletes it) and starts a fresh library.
@@ -92,19 +163,14 @@ final class LibraryStore {
                 addSample() // Seed only a genuinely new library; a saved empty library stays empty.
                 return
             }
+            // Migrations ran before this, so only the current format is read.
             struct Version: Decodable { var version: Int }
-            switch try JSONDecoder().decode(Version.self, from: data).version {
-            case 1:
-                try migrate(from: JSONDecoder().decode(LegacyLibrary.self, from: data))
-            case 2:
-                let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
-                guard Set(snapshot.books.map(\.id)).count == snapshot.books.count else { throw LibraryError.invalidLibrary }
-                books = snapshot.books
-                favorites = snapshot.favorites
-                fingerprints = snapshot.fingerprints
-            default:
-                throw LibraryError.invalidLibrary
-            }
+            guard try JSONDecoder().decode(Version.self, from: data).version == Self.libraryVersion else { throw LibraryError.invalidLibrary }
+            let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+            guard Set(snapshot.books.map(\.id)).count == snapshot.books.count else { throw LibraryError.invalidLibrary }
+            books = snapshot.books
+            favorites = snapshot.favorites
+            fingerprints = snapshot.fingerprints
         } catch {
             readFailure = "无法读取已保存的书库。原文件没有被改动。"
         }
@@ -114,13 +180,12 @@ final class LibraryStore {
 
     func content(for book: ReaderBook) async throws -> BookContent {
         if book.isSample { return SampleBook.content() }
+        // A book waiting for its text to be rebuilt is rebuilt first, so it opens as it now reads.
+        if rebuild.pending.contains(book.id) || rebuildTasks[book.id] != nil { await rebuildNow(book.id) }
+        let book = books.first { $0.id == book.id } ?? book
         if let contentCache, contentCache.id == book.id { return contentCache.content }
-        let current = directory(for: book.id).content
-        let legacy = legacyContentURL(for: book.id)
-        let content = try await detached {
-            let url = FileManager.default.fileExists(atPath: current.path) ? current : legacy
-            return try JSONDecoder().decode(BookContent.self, from: Data(contentsOf: url))
-        }
+        let url = directory(for: book.id).content(book.contentFile ?? BookDirectory.firstContentFile)
+        let content = try await detached { try JSONDecoder().decode(BookContent.self, from: Data(contentsOf: url)) }
         contentCache = (book.id, content)
         return content
     }
@@ -146,7 +211,7 @@ final class LibraryStore {
                 let files = BookDirectory(url: staging)
                 let encoder = JSONEncoder()
                 let options: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-                try encoder.encode(imported.content).write(to: files.content, options: options)
+                try encoder.encode(imported.content).write(to: files.content(imported.book.contentFile ?? BookDirectory.firstContentFile), options: options)
                 try encoder.encode(imported.package).write(to: files.package, options: options)
                 try imported.cover?.write(to: files.cover, options: options)
                 // The book appears all at once or not at all.
@@ -193,9 +258,9 @@ final class LibraryStore {
         perform {
             try commit(books: books.filter { $0.id != id }, favorites: favorites, fingerprints: fingerprints.filter { $0.value != id })
             try? FileManager.default.removeItem(at: directory(for: id).url)
-            try? FileManager.default.removeItem(at: legacyContentURL(for: id))
-            try? FileManager.default.removeItem(at: legacyCoverURL(for: id))
             if contentCache?.id == id { contentCache = nil }
+            rebuild.pending.removeAll { $0 == id }
+            updateQueue { $0.books.removeAll { $0 == id }; $0.failures[id] = nil }
         }
     }
 
@@ -294,9 +359,211 @@ final class LibraryStore {
         perform { try commit(books: books, favorites: updated, fingerprints: fingerprints) }
     }
 
+    // MARK: Rebuilding reading text
+
+    /// Picks up what migrations asked for and what an earlier launch left unfinished.
+    private func resumeRebuilding() {
+        var queue = RebuildQueue.load(from: dataDirectory)
+        if queue.requested.contains(.content) {
+            let rebuildable = books.filter(\.canRebuild).map(\.id)
+            queue.books += rebuildable.filter { !queue.books.contains($0) }
+            queue.requested.remove(.content)
+            queue.failures = [:]
+            queue.total = queue.books.count
+        }
+        // Books removed since they were queued.
+        queue.books.removeAll { id in !books.contains { $0.id == id && $0.canRebuild } }
+        queue.total = max(queue.total, queue.books.count)
+        try? queue.save(to: dataDirectory)
+        rebuild = RebuildStatus(pending: queue.books, total: queue.total, current: nil, failures: queue.failures)
+        startRebuildWorker()
+    }
+
+    private func updateQueue(_ change: (inout RebuildQueue) -> Void) {
+        var queue = RebuildQueue.load(from: dataDirectory)
+        change(&queue)
+        if queue.books.isEmpty { queue.total = 0 }
+        try? queue.save(to: dataDirectory)
+    }
+
+    /// Rebuilds the queued books one at a time, in the background.
+    private func startRebuildWorker() {
+        guard rebuildWorker == nil, !rebuild.pending.isEmpty else { return }
+        rebuildWorker = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                // Failed books wait for the next launch or a retry.
+                guard let next = self.rebuild.pending.first(where: { self.rebuild.failures[$0] == nil }) else { break }
+                await self.rebuildNow(next)
+            }
+            self?.rebuildWorker = nil
+        }
+    }
+
+    /// Rebuilds one book now, or waits for the rebuild already under way.
+    func rebuildNow(_ id: UUID) async {
+        if let running = rebuildTasks[id] { return await running.value }
+        guard rebuild.pending.contains(id) else { return }
+        let task = Task { await self.rebuildBook(id) }
+        rebuildTasks[id] = task
+        await task.value
+        rebuildTasks[id] = nil
+    }
+
+    /// Tries the books that failed again.
+    func retryFailedRebuilds() {
+        rebuild.failures = [:]
+        updateQueue { $0.failures = [:] }
+        startRebuildWorker()
+    }
+
+    private func rebuildBook(_ id: UUID) async {
+        guard let book = books.first(where: { $0.id == id }), book.canRebuild else {
+            finishRebuild(id, failure: nil)
+            return
+        }
+        rebuild.current = id
+        let files = directory(for: id)
+        let oldFile = book.contentFile ?? BookDirectory.firstContentFile
+        do {
+            let result = try await detached { () throws -> (BookContent, String, TextRemap) in
+                let package = try JSONDecoder().decode(BookPackage.self, from: Data(contentsOf: files.package))
+                let built = try BookBuilder.build(from: files, package: package)
+                let old = try JSONDecoder().decode(BookContent.self, from: Data(contentsOf: files.content(oldFile)))
+                let remap = TextRemap(old: old.chapters, new: built.content.chapters)
+                let name = files.nextContentFile()
+                try JSONEncoder().encode(built.content).write(to: files.content(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                return (built.content, name, remap)
+            }
+            try apply(rebuilt: result.0, file: result.1, remap: result.2, to: id)
+            finishRebuild(id, failure: nil)
+        } catch is CancellationError {
+            rebuild.current = nil
+        } catch {
+            finishRebuild(id, failure: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    /// Switches a book to its rebuilt text and carries its position and saved words over, in one library write;
+    /// positions saved while the text was being built are carried over too, since they are read here.
+    private func apply(rebuilt content: BookContent, file: String, remap: TextRemap, to id: UUID) throws {
+        guard let index = books.firstIndex(where: { $0.id == id }) else { return }
+        var updated = books
+        var book = updated[index]
+        let position = remap.map(chapter: book.position.chapter, offset: book.position.offset)
+        book.position.chapter = position.chapter
+        book.position.offset = position.offset
+        book.chapters = content.chapterInfo
+        book.contentFile = file
+        updated[index] = book
+        let favorites = favorites.map { item -> SavedPassage in
+            guard item.bookID == id else { return item }
+            var item = item
+            let mapped = remap.map(chapter: item.chapterIndex, offset: item.offset)
+            let chapter = content.chapters[mapped.chapter]
+            item.chapterIndex = mapped.chapter
+            item.offset = Self.locate(item, in: chapter.text, near: mapped.offset)
+            item.chapterTitle = chapter.title
+            return item
+        }
+        try commit(books: updated, favorites: favorites, fingerprints: fingerprints)
+        contentCache = (id, content)
+        pruneContentFiles(of: id)
+    }
+
+    /// Where a saved word is in its chapter: the mapped offset when the word is there, else the nearest place it
+    /// occurs, else where its sentence is.
+    nonisolated static func locate(_ item: SavedPassage, in text: String, near offset: Int) -> Int {
+        let text = text as NSString
+        let selection = item.selection
+        let length = (selection as NSString).length
+        func matches(at location: Int) -> Bool {
+            location >= 0 && location + length <= text.length
+                && text.substring(with: NSRange(location: location, length: length)).compare(selection, options: .caseInsensitive) == .orderedSame
+        }
+        if length == 0 || matches(at: offset) { return min(offset, text.length) }
+        let window = 400
+        let start = max(0, offset - window), end = min(text.length, offset + window)
+        var best: Int?
+        var search = NSRange(location: start, length: end - start)
+        while true {
+            let found = text.range(of: selection, options: .caseInsensitive, range: search)
+            guard found.location != NSNotFound else { break }
+            if best.map({ abs(found.location - offset) < abs($0 - offset) }) ?? true { best = found.location }
+            search = NSRange(location: found.location + 1, length: end - found.location - 1)
+            if search.length <= 0 { break }
+        }
+        if let best { return best }
+        if !item.sentence.isEmpty {
+            let sentence = text.range(of: item.sentence)
+            if sentence.location != NSNotFound {
+                let inside = text.range(of: selection, options: .caseInsensitive, range: sentence)
+                return inside.location != NSNotFound ? inside.location : sentence.location
+            }
+        }
+        return min(offset, text.length)
+    }
+
+    private func finishRebuild(_ id: UUID, failure: String?) {
+        if rebuild.current == id { rebuild.current = nil }
+        if let failure {
+            rebuild.failures[id] = failure
+            updateQueue { $0.failures[id] = failure }
+        } else {
+            rebuild.pending.removeAll { $0 == id }
+            rebuild.failures[id] = nil
+            updateQueue { $0.books.removeAll { $0 == id }; $0.failures[id] = nil }
+            if rebuild.pending.isEmpty { rebuild.total = 0 }
+        }
+    }
+
+    /// Deletes reading-text files nothing points to: neither the library nor a backup of it kept for going back.
+    private func pruneContentFiles(of id: UUID) {
+        let files = directory(for: id)
+        var keep = Set(books.filter { $0.id == id }.map { $0.contentFile ?? BookDirectory.firstContentFile })
+        keep.formUnion(backedUpContentFiles(of: id))
+        for file in files.contentFiles() where !keep.contains(file) {
+            try? FileManager.default.removeItem(at: files.content(file))
+        }
+    }
+
+    /// Reading-text files that the libraries set aside by the last migration point to. A library from before
+    /// v0.2.0 names none; its books read `content.json`.
+    private func backedUpContentFiles(of id: UUID) -> Set<String> {
+        struct Saved: Decodable {
+            struct Book: Decodable { var id: UUID; var contentFile: String? }
+            var books: [Book]
+        }
+        var files = Set<String>()
+        for backup in migrator.history().flatMap(\.backups) where backup.hasPrefix("library.json.") {
+            guard let data = try? Data(contentsOf: dataDirectory.appendingPathComponent(backup)),
+                  let saved = try? JSONDecoder().decode(Saved.self, from: data) else { continue }
+            for book in saved.books where book.id == id { files.insert(book.contentFile ?? BookDirectory.firstContentFile) }
+        }
+        return files
+    }
+
+    /// Deletes what the last migration set aside, and the reading text only those backups pointed to.
+    func removeMigrationBackups() {
+        migrator.removeBackups()
+        for book in books { pruneContentFiles(of: book.id) }
+    }
+
+    /// For development builds: puts the data back as it was before the last migration and runs it again.
+    func remigrateFromBackups() {
+        do {
+            try migrator.restoreLatestBackups()
+            try? FileManager.default.removeItem(at: dataDirectory.appendingPathComponent(RebuildQueue.name))
+        } catch {
+            errorMessage = "无法从备份恢复：\(error.localizedDescription)"
+            return
+        }
+        retryLoading()
+    }
+
     // MARK: Persistence
 
     private func ensureReadable() throws {
+        if newerDataVersion != nil { throw LibraryError.newerData }
         if let readFailure { throw LibraryError.unreadable(readFailure) }
     }
 
@@ -319,98 +586,6 @@ final class LibraryStore {
         self.favorites = favorites
         self.fingerprints = fingerprints
     }
-
-    // MARK: Version 1 migration
-
-    /// Version 1 stored every book's HTML and text inline. Text is rebuilt with
-    /// today's paragraph rules and every saved offset is remapped onto it.
-    private struct LegacyLibrary: Decodable {
-        struct Chapter: Decodable { var id: String; var title: String; var html: String; var text: String }
-        struct Book: Decodable {
-            var id: UUID; var title: String; var author: String; var chapters: [Chapter]
-            var position: ReadingPosition; var isSample: Bool
-        }
-        var books: [Book]
-        var favorites: [SavedPassage]
-        var fingerprints: [String: UUID]
-    }
-
-    private func migrate(from legacy: LegacyLibrary) throws {
-        var migratedBooks: [ReaderBook] = []
-        var migratedFavorites = legacy.favorites
-        var mappings: [UUID: [(old: String, new: String)]] = [:]
-        for old in legacy.books {
-            let content: BookContent
-            if old.isSample {
-                content = SampleBook.content()
-            } else {
-                content = BookContent(chapters: old.chapters.map { chapter in
-                    if let rebuilt = try? LenientHTML.extract(chapter.html),
-                       OffsetMap.sameWords(chapter.text, rebuilt.text) {
-                        return ReaderChapter(id: chapter.id, title: chapter.title, text: rebuilt.text, styles: rebuilt.styles)
-                    }
-                    let collapsed = chapter.text.replacingOccurrences(of: #"\n[ \t]*\n+"#, with: "\n", options: .regularExpression)
-                    return ReaderChapter(id: chapter.id, title: chapter.title, text: collapsed)
-                })
-                let data = try JSONEncoder().encode(content)
-                try FileManager.default.createDirectory(at: booksDirectory, withIntermediateDirectories: true)
-                try data.write(to: legacyContentURL(for: old.id), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            }
-            let pairs = zip(old.chapters, content.chapters).map { ($0.text, $1.text) }
-            mappings[old.id] = pairs
-            var position = old.position
-            if pairs.indices.contains(position.chapter) {
-                position.offset = OffsetMap.map(position.offset, from: pairs[position.chapter].0, to: pairs[position.chapter].1)
-            }
-            migratedBooks.append(ReaderBook(id: old.id, title: old.title, author: old.author == "Unknown author" ? "" : old.author,
-                                            chapters: content.chapterInfo, position: position, isSample: old.isSample))
-        }
-        for index in migratedFavorites.indices {
-            var item = migratedFavorites[index]
-            if let pairs = mappings[item.bookID], pairs.indices.contains(item.chapterIndex) {
-                item.offset = OffsetMap.map(item.offset, from: pairs[item.chapterIndex].old, to: pairs[item.chapterIndex].new)
-            }
-            if item.definition == nil, let entry = WordDictionary.shared.lookup(item.selection) {
-                item.headword = entry.headword
-                item.phonetic = entry.phonetic
-                item.definition = entry.definition
-            }
-            item.reviewStage = item.reviewStage ?? 0
-            migratedFavorites[index] = item
-        }
-        try commit(books: migratedBooks, favorites: migratedFavorites, fingerprints: legacy.fingerprints)
-    }
-}
-
-/// Maps offsets between two renderings of the same words that differ only in whitespace.
-enum OffsetMap {
-    static func sameWords(_ a: String, _ b: String) -> Bool {
-        a.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }
-            .elementsEqual(b.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) })
-    }
-
-    static func map(_ offset: Int, from old: String, to new: String) -> Int {
-        var visible = 0
-        var position = 0
-        for unit in old.utf16 {
-            guard position < offset else { break }
-            if !isSpace(unit) { visible += 1 }
-            position += 1
-        }
-        var mapped = 0
-        for unit in new.utf16 {
-            if !isSpace(unit) {
-                if visible == 0 { return mapped }
-                visible -= 1
-            }
-            mapped += 1
-        }
-        return mapped
-    }
-
-    private static func isSpace(_ unit: UInt16) -> Bool {
-        Unicode.Scalar(unit).map { CharacterSet.whitespacesAndNewlines.contains($0) } ?? false
-    }
 }
 
 enum LibraryError: LocalizedError {
@@ -418,6 +593,7 @@ enum LibraryError: LocalizedError {
     case invalidLibrary
     case saveFailed
     case unreadable(String)
+    case newerData
 
     var errorDescription: String? {
         switch self {
@@ -425,6 +601,7 @@ enum LibraryError: LocalizedError {
         case .invalidLibrary: "书库文件已损坏，或来自更新版本的应用。"
         case .saveFailed: "无法保存到这台设备，原有数据没有被改动。请检查储存空间后重试。"
         case .unreadable(let message): message
+        case .newerData: "这些数据来自更新版本的 Readling，请先安装新版本。"
         }
     }
 }

@@ -17,8 +17,8 @@ struct TranslationPrompts: Hashable, Sendable {
 
     static let `default` = TranslationPrompts(translate: defaultTranslate, explain: defaultExplain)
 
-    static let translateKey = "translationPromptTranslate"
-    static let explainKey = "translationPromptExplain"
+    static let translateKey = SettingsKeys.translationPromptTranslate
+    static let explainKey = SettingsKeys.translationPromptExplain
 
     /// Saved prompts, with blank or missing ones falling back to the defaults.
     init(defaults: UserDefaults) {

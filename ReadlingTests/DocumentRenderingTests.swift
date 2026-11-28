@@ -7,7 +7,7 @@ import UIKit
 private func chapter(_ body: String) throws -> ReaderChapter {
     let document = try XMLTree.parse(Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>\(body)</body></html>".utf8))
     var renderer = ChapterRenderer()
-    try BookImporter.render(try #require(document.descendants("body").first), into: &renderer)
+    try BookBuilder.render(try #require(document.descendants("body").first), into: &renderer)
     let result = renderer.finish()
     return ReaderChapter(id: "c", title: "T", text: result.text, styles: result.styles, anchors: result.anchors)
 }

@@ -64,18 +64,18 @@ struct ReaderSettingsPanel: View {
     /// The sheet is pulled up: the settings below the fold appear; at half height they stay hidden, not peeking.
     var showsAll: Bool
 
-    @AppStorage("readerFont") private var fontSize = ReaderTypography.defaultSize
-    @AppStorage("readerTypeface") private var typeface = ReaderTypeface.newYork
-    @AppStorage("readerAppearance") private var appearance = "system"
-    @AppStorage("readerDayTheme") private var dayTheme = ReaderTheme.defaultDay
-    @AppStorage("readerNightTheme") private var nightTheme = ReaderTheme.defaultNight
-    @AppStorage("readerBackdrop") private var backdrop = ReaderBackdrop.plain
-    @AppStorage("readerBackdropVersion") private var backdropVersion = 0
-    @AppStorage("readerPageTurn") private var pageTurn = PageTurn.scroll
-    @AppStorage("readerLineSpacing") private var lineSpacing = ReaderLayout.defaultLineSpacing
-    @AppStorage("readerParagraphSpacing") private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
-    @AppStorage("readerMargin") private var margin = ReaderLayout.defaultMargin
-    @AppStorage("readerKeepAwake") private var keepAwake = false
+    @AppStorage(SettingsKeys.readerFont) private var fontSize = ReaderTypography.defaultSize
+    @AppStorage(SettingsKeys.readerTypeface) private var typeface = ReaderTypeface.newYork
+    @AppStorage(SettingsKeys.readerAppearance) private var appearance = "system"
+    @AppStorage(SettingsKeys.readerDayTheme) private var dayTheme = ReaderTheme.defaultDay
+    @AppStorage(SettingsKeys.readerNightTheme) private var nightTheme = ReaderTheme.defaultNight
+    @AppStorage(SettingsKeys.readerBackdrop) private var backdrop = ReaderBackdrop.plain
+    @AppStorage(SettingsKeys.readerBackdropVersion) private var backdropVersion = 0
+    @AppStorage(SettingsKeys.readerPageTurn) private var pageTurn = PageTurn.scroll
+    @AppStorage(SettingsKeys.readerLineSpacing) private var lineSpacing = ReaderLayout.defaultLineSpacing
+    @AppStorage(SettingsKeys.readerParagraphSpacing) private var paragraphSpacing = ReaderLayout.defaultParagraphSpacing
+    @AppStorage(SettingsKeys.readerMargin) private var margin = ReaderLayout.defaultMargin
+    @AppStorage(SettingsKeys.readerKeepAwake) private var keepAwake = false
     @State private var brightness = ScreenBrightness.current
     @State private var choosingPhoto = false
     @State private var photo: PhotosPickerItem?
@@ -367,7 +367,7 @@ enum ScreenBrightness {
 // MARK: Sheets
 
 struct ReaderFontPicker: View {
-    @AppStorage("readerTypeface") private var typeface = ReaderTypeface.newYork
+    @AppStorage(SettingsKeys.readerTypeface) private var typeface = ReaderTypeface.newYork
 
     var body: some View {
         List(ReaderTypeface.allCases) { item in

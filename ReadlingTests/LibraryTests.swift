@@ -52,7 +52,7 @@ struct LibraryTests {
             #expect(existingID == id)
         }
         let files = reopened.directory(for: id)
-        #expect(FileManager.default.fileExists(atPath: files.content.path))
+        #expect(FileManager.default.fileExists(atPath: files.content(BookDirectory.firstContentFile).path))
         reopened.removeBook(id: id)
         #expect(!FileManager.default.fileExists(atPath: files.url.path))
     }
@@ -184,40 +184,6 @@ struct LibraryTests {
         } catch is CancellationError { }
         #expect(store.books.count == 1)
         #expect(store.books.first?.isSample == true)
-    }
-
-    @Test func versionOneLibraryMigratesAndRemapsOffsets() async throws {
-        let folder = try scratchDirectory()
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let file = folder.appendingPathComponent("library.json")
-        let bookID = UUID()
-        let oldText = "First paragraph here.\n\nThe second one is longer."
-        let oldHTML = "<html><head><meta charset=\"utf-8\"></head><body><p>First paragraph here.</p><p>The <em>second</em> one is longer.</p></body></html>"
-        let oldOffset = (oldText as NSString).range(of: "second").location
-        let legacy: [String: Any] = [
-            "version": 1,
-            "books": [["id": bookID.uuidString, "title": "Old", "author": "Unknown author", "isSample": false,
-                       "position": ["chapter": 0, "offset": oldOffset],
-                       "chapters": [["id": "c1", "title": "One", "html": oldHTML, "text": oldText]]]],
-            "favorites": [["id": UUID().uuidString, "bookID": bookID.uuidString, "bookTitle": "Old", "chapterTitle": "One",
-                           "chapterIndex": 0, "offset": oldOffset, "selection": "second", "sentence": "The second one is longer.",
-                           "mastered": false]],
-            "fingerprints": ["abc": bookID.uuidString]
-        ]
-        try JSONSerialization.data(withJSONObject: legacy).write(to: file)
-        let store = LibraryStore(fileURL: file)
-        #expect(store.readFailure == nil)
-        let book = try #require(store.books.first)
-        #expect(book.author == "")
-        let content = try await store.content(for: book)
-        let text = content.chapters[0].text as NSString
-        #expect(content.chapters[0].text == "First paragraph here.\nThe second one is longer.")
-        #expect(content.chapters[0].styles.contains { $0.style == .italic && text.substring(with: $0.range) == "second" })
-        #expect(text.substring(with: NSRange(location: book.position.offset, length: 6)) == "second")
-        let favorite = try #require(store.favorites.first)
-        #expect(text.substring(with: NSRange(location: favorite.offset, length: 6)) == "second")
-        #expect(favorite.definition != nil)
-        #expect(try String(contentsOf: file, encoding: .utf8).contains("\"version\":2"))
     }
 }
 
@@ -585,8 +551,7 @@ struct ReadingSurfaceContractTests {
     @Test func offsetsMapAcrossWhitespaceChanges() {
         let old = "One.\n\nTwo  words."
         let new = "One.\nTwo words."
-        #expect(OffsetMap.map((old as NSString).range(of: "words").location, from: old, to: new) == (new as NSString).range(of: "words").location)
-        #expect(OffsetMap.sameWords(old, new))
+        #expect(Alignment(old: old, new: new).map((old as NSString).range(of: "words").location) == (new as NSString).range(of: "words").location)
     }
 }
 

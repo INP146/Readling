@@ -3,8 +3,9 @@
 
   prepare VERSION [--dry-run] [--base-tag TAG]  bump Xcode version/build and draft release notes
                                                 (with RELEASE_AI_PROVIDER in .env, codex/claude writes the draft)
-  check [TAG] [--require-notes]                 project.pbxproj, bundled dictionary and notes agree
+  check [TAG] [--require-notes]                 project.pbxproj, data migrations, bundled dictionary and notes agree
   build [--allow-unreleased]                    compile unsigned Release iOS app, verify bundle and package IPA
+  fixture [TAG] [--destination DEST]            generate ReadlingTests/Fixtures/AppData/<version>.bundle after tagging
 
 Never commits, tags or pushes. Standard library only; runs on macOS Python 3.9+.
 """
@@ -20,6 +21,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -29,6 +31,10 @@ import dictionary_release  # noqa: E402
 import release_ai  # noqa: E402
 
 PBXPROJ = Path("Readling.xcodeproj/project.pbxproj")
+DATA_VERSION_FILE = Path("Readling/Persistence/DataVersion.swift")
+SNAPSHOTS_DIR = Path("Readling/Persistence/Snapshots")
+MIGRATIONS_DIR = Path("Readling/Persistence/Migrations")
+FIXTURES_DIR = Path("ReadlingTests/Fixtures/AppData")
 NOTES_DIR = Path("docs/releases")
 BUILD_DIR = Path("build/app")
 DERIVED_DATA = Path("build/DerivedData")
@@ -91,6 +97,216 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def version_identifier(version: str) -> str:
+    return version.replace(".", "_").replace("-", "_")
+
+
+def snapshot_name(version: str) -> str:
+    return f"V{version_identifier(version)}"
+
+
+def migration_name(from_version: str, to_version: str) -> str:
+    return f"Migration_{version_identifier(from_version)}_to_{version_identifier(to_version)}"
+
+
+def fixture_bundle_path(root: Path, version: str) -> Path:
+    return root / FIXTURES_DIR / f"{version}.bundle"
+
+
+def fixture_is_complete(bundle: Path) -> bool:
+    return (bundle / "Readling/library.json").is_file() and (bundle / "settings.plist").is_file()
+
+
+def read_data_version(root: Path) -> tuple[list[str], list[str], str]:
+    """Reads `chain`, `migrations` type names, and `currentSettingsKeys` snapshot from DataVersion.swift."""
+    path = root / DATA_VERSION_FILE
+    text = path.read_text(encoding="utf-8")
+    chain_match = re.search(r"static\s+let\s+chain\s*(?::\s*\[String\])?\s*=\s*\[([^\]]*)\]", text)
+    if chain_match is None:
+        raise ValueError(f"{DATA_VERSION_FILE} 缺少 static let chain 定义")
+    chain = re.findall(r'"([^"]+)"', chain_match.group(1))
+    mig_match = re.search(r"static\s+let\s+migrations\s*:\s*\[Migration\]\s*=\s*\[([^\]]*)\]", text)
+    if mig_match is None:
+        raise ValueError(f"{DATA_VERSION_FILE} 缺少 static let migrations 定义")
+    migrations = re.findall(r"\b(Migration_[A-Za-z0-9_]+)\.migration\b", mig_match.group(1))
+    keys_match = re.search(r"static\s+let\s+currentSettingsKeys\s*=\s*(V[A-Za-z0-9_]+)\.settingsKeys\b", text)
+    if keys_match is None:
+        raise ValueError(f"{DATA_VERSION_FILE} 缺少 static let currentSettingsKeys 定义")
+    return chain, migrations, keys_match.group(1)
+
+
+def scaffold_empty_migration(root: Path, from_version: str, to_version: str) -> list[tuple[Path, str]]:
+    """Builds the snapshot, empty migration step, and updated DataVersion.swift for a release with no data changes."""
+    from_snap = snapshot_name(from_version)
+    to_snap = snapshot_name(to_version)
+    mig_type = migration_name(from_version, to_version)
+    snapshot_text = f"""import Foundation
+
+/// The data v{to_version} writes. Frozen once v{to_version} is released (see docs/data-versioning.md).
+enum {to_snap} {{
+    typealias Library = {from_snap}.Library
+    typealias Book = {from_snap}.Book
+    typealias ChapterInfo = {from_snap}.ChapterInfo
+    typealias Position = {from_snap}.Position
+    typealias Passage = {from_snap}.Passage
+    static let settingsKeys = {from_snap}.settingsKeys
+}}
+"""
+    migration_text = f"""import Foundation
+
+/// v{from_version} → v{to_version}: no source-data or reading-text changes.
+enum {mig_type} {{
+    static let migration = Migration(from: "{from_version}", to: "{to_version}") {{ _ in }}
+}}
+"""
+    dv_path = root / DATA_VERSION_FILE
+    dv_text = dv_path.read_text(encoding="utf-8")
+    dv_text, c1 = re.subn(
+        r"(static\s+let\s+chain\s*(?::\s*\[String\])?\s*=\s*\[)([^\]]*)(\])",
+        lambda m: f'{m.group(1)}{m.group(2).rstrip()}, "{to_version}"{m.group(3)}',
+        dv_text,
+        count=1,
+    )
+    dv_text, c2 = re.subn(
+        r"(static\s+let\s+migrations\s*:\s*\[Migration\]\s*=\s*\[)([^\]]*)(\])",
+        lambda m: f"{m.group(1)}{m.group(2).rstrip()}\n        {mig_type}.migration,\n    {m.group(3)}",
+        dv_text,
+        count=1,
+    )
+    dv_text, c3 = re.subn(
+        r"static\s+let\s+currentSettingsKeys\s*=\s*V[A-Za-z0-9_]+\.settingsKeys\b",
+        f"static let currentSettingsKeys = {to_snap}.settingsKeys",
+        dv_text,
+        count=1,
+    )
+    if (c1, c2, c3) != (1, 1, 1):
+        raise ValueError(f"无法更新 {DATA_VERSION_FILE}")
+    return [
+        (root / SNAPSHOTS_DIR / f"{to_snap}.swift", snapshot_text),
+        (root / MIGRATIONS_DIR / f"{mig_type}.swift", migration_text),
+        (dv_path, dv_text),
+    ]
+
+
+def merged_app_tags(root: Path) -> list[str]:
+    git = shutil.which("git")
+    if not git or not (root / ".git").exists():
+        return []
+    res = subprocess.run([git, "tag", "--merged", "HEAD", "--list", "v*"], cwd=root, capture_output=True, text=True)
+    if res.returncode != 0:
+        return []
+    versions: list[str] = []
+    for raw in res.stdout.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            versions.append(normalize_version(raw))
+        except ValueError:
+            continue
+    return sorted(set(versions), key=version_key)
+
+
+def step_requests_content_rebuild(root: Path, from_version: str, to_version: str) -> bool:
+    step_path = root / MIGRATIONS_DIR / f"{migration_name(from_version, to_version)}.swift"
+    if not step_path.is_file():
+        return False
+    text = re.sub(r"//.*", "", step_path.read_text(encoding="utf-8"))
+    return "requestRebuild(.content)" in text
+
+
+def check_data_versioning(
+    root: Path,
+    project_version: str,
+    target_version: str | None,
+    *,
+    require_notes: bool,
+) -> list[str]:
+    if not (root / DATA_VERSION_FILE).is_file():
+        return []
+    errors: list[str] = []
+    try:
+        chain, migrations, keys_snap = read_data_version(root)
+    except ValueError as exc:
+        return [str(exc)]
+
+    if not chain:
+        return [f"{DATA_VERSION_FILE} 的 chain 不能为空"]
+    valid_chain = True
+    for item in chain:
+        try:
+            normalize_version(item)
+        except ValueError as exc:
+            errors.append(f"{DATA_VERSION_FILE} 的 chain 含无效版本 {item}：{exc}")
+            valid_chain = False
+    if valid_chain:
+        if chain[0] != "0.1.0":
+            errors.append(f"{DATA_VERSION_FILE} 的迁移链起点应为 0.1.0，当前为 {chain[0]}")
+        for a, b in zip(chain, chain[1:]):
+            if version_key(a) >= version_key(b):
+                errors.append(f"{DATA_VERSION_FILE} 的 chain 必须严格递增：{a} -> {b}")
+
+    expected_keys_snap = snapshot_name(chain[-1])
+    if keys_snap != expected_keys_snap:
+        errors.append(f"{DATA_VERSION_FILE} 的 currentSettingsKeys 应指向 {expected_keys_snap}，当前为 {keys_snap}")
+
+    for item in chain:
+        snap = snapshot_name(item)
+        snap_path = root / SNAPSHOTS_DIR / f"{snap}.swift"
+        if not snap_path.is_file():
+            errors.append(f"缺少数据快照 {snap_path.relative_to(root)}")
+        elif not re.search(rf"\benum\s+{re.escape(snap)}\b", snap_path.read_text(encoding="utf-8")):
+            errors.append(f"{snap_path.relative_to(root)} 未定义 enum {snap}")
+
+    expected_migrations = [migration_name(a, b) for a, b in zip(chain, chain[1:])]
+    if migrations != expected_migrations:
+        errors.append(f"{DATA_VERSION_FILE} 的 migrations 应为 {expected_migrations}，当前为 {migrations}")
+    for a, b in zip(chain, chain[1:]):
+        mig = migration_name(a, b)
+        mig_path = root / MIGRATIONS_DIR / f"{mig}.swift"
+        if not mig_path.is_file():
+            errors.append(f"缺少迁移步骤 {mig_path.relative_to(root)}")
+        else:
+            mig_text = mig_path.read_text(encoding="utf-8")
+            if f'Migration(from: "{a}", to: "{b}")' not in mig_text:
+                errors.append(f'{mig_path.relative_to(root)} 必须声明 Migration(from: "{a}", to: "{b}")')
+
+    for released in chain[:-1]:
+        bundle = fixture_bundle_path(root, released)
+        if not fixture_is_complete(bundle):
+            errors.append(f"缺少已发布版本的数据夹具 {bundle.relative_to(root)}")
+
+    if project_version and project_version != UNRELEASED_VERSION and valid_chain:
+        allowed = {chain[-1]} | ({chain[-2]} if len(chain) >= 2 else set())
+        if project_version not in allowed:
+            errors.append(
+                f"{PBXPROJ} 的版本 {project_version} 与 {DATA_VERSION_FILE} 末端 {chain[-1]} 不匹配"
+            )
+
+    if target_version is not None and chain[-1] != target_version:
+        errors.append(f"待发布版本 {target_version} 与 {DATA_VERSION_FILE} 末端 {chain[-1]} 不一致")
+
+    for tagged in merged_app_tags(root):
+        if tagged not in chain:
+            errors.append(f"git tag v{tagged} 未包含在 {DATA_VERSION_FILE} 的 chain 中")
+
+    if require_notes and len(chain) >= 2:
+        effective = target_version or project_version
+        if effective == chain[-1] and step_requests_content_rebuild(root, chain[-2], chain[-1]):
+            path = notes_path(root, effective)
+            if path.is_file():
+                notes = path.read_text(encoding="utf-8")
+                section = re.search(r"(?m)^## 升级与兼容[ \t]*\n([\s\S]*?)(?=^## |\Z)", notes)
+                body = section.group(1) if section else ""
+                if not any(word in body for word in ("自动更新", "自动重建", "重新生成正文")):
+                    errors.append(
+                        f"{migration_name(chain[-2], chain[-1])} 要求重建正文，"
+                        f"{path.relative_to(root)} 的“## 升级与兼容”需说明已导入的书会自动更新"
+                    )
+
+    return errors
 
 
 def _config_blocks(pbx_text: str) -> list[tuple[str, str, slice]]:
@@ -230,12 +446,14 @@ def check(root: Path, version: str | None = None, *, require_notes: bool = False
     else:
         errors.append(f"缺少 {dictionary_release.RELEASE}")
 
+    expected_target = normalize_version(version) if version is not None else None
     if version is not None:
-        expected = normalize_version(version)
         if current == UNRELEASED_VERSION:
-            errors.append(f"{PBXPROJ} 仍为未发布基线 {UNRELEASED_VERSION}，请先运行 prepare {expected}")
-        elif current and current != expected:
+            errors.append(f"{PBXPROJ} 仍为未发布基线 {UNRELEASED_VERSION}，请先运行 prepare {expected_target}")
+        elif current and current != expected_target:
             errors.append(f"tag 版本 {version} 与 {PBXPROJ} 的 {current} 不一致")
+
+    errors.extend(check_data_versioning(root, current, expected_target, require_notes=require_notes))
 
     if require_notes:
         target_version = normalize_version(version) if version is not None else current
@@ -262,7 +480,8 @@ def check(root: Path, version: str | None = None, *, require_notes: bool = False
 
 
 def draft_notes(version: str, previous: str | None, build_number: int, dict_version: str,
-                *, base_tag: str | None = None, ai_review: bool = False) -> str:
+                *, base_tag: str | None = None, ai_review: bool = False,
+                rebuilds_content: bool = False) -> str:
     if previous is None and base_tag is None:
         changes = f"{TODO}：填写首个版本的核心功能亮点（导入导出、阅读排版、查词与词典、翻译、生词复习），删除此占位行。"
         upgrade = (
@@ -274,11 +493,16 @@ def draft_notes(version: str, previous: str | None, build_number: int, dict_vers
     else:
         ref = base_tag or tag(previous or "")
         changes = f"{TODO}：填写相对 {ref} 的主要变更，删除此占位行。"
+        rebuild_note = (
+            "首次打开后，已导入的书籍会在后台自动更新正文，阅读进度与生词位置会自动换算。"
+            if rebuilds_content else ""
+        )
         upgrade = (
             f"{TODO}：说明从 {tag(previous) if previous else ref} 升级是否涉及书库/词典/设置迁移或回滚限制；"
             "若无需额外迁移，请保留下方覆盖安装说明并删除此占位行。\n\n"
             f"使用与旧版相同的签名证书和 Bundle ID（`{BUNDLE_ID}`）直接覆盖安装即可，书籍、阅读位置、生词、"
-            "已下载的词典包以及保存在本机钥匙串中的 API Key 都会保留。"
+            f"已下载的词典包以及保存在本机钥匙串中的 API Key 都会保留。{rebuild_note}"
+            "升级后的数据不可由旧版应用读取（不支持带数据降级）。"
         )
         basis = f"{ref} 以来的改动"
     review = ""
@@ -316,10 +540,30 @@ def prepare(root: Path, version: str, *, dry_run: bool = False, base_tag: str | 
     if notes.exists():
         raise ValueError(f"{notes.relative_to(root)} 已存在；为保留已有说明，未修改任何文件")
 
+    migration_writes: list[tuple[Path, str]] = []
+    rebuilds_content = False
+    if (root / DATA_VERSION_FILE).is_file() and previous is not None:
+        chain, _, _ = read_data_version(root)
+        if chain[-1] == version:
+            rebuilds_content = len(chain) >= 2 and step_requests_content_rebuild(root, chain[-2], version)
+        elif chain[-1] == previous:
+            prev_bundle = fixture_bundle_path(root, previous)
+            if not fixture_is_complete(prev_bundle):
+                raise ValueError(
+                    f"缺少已发布版本的数据夹具 {prev_bundle.relative_to(root)}；"
+                    f"请先在 {tag(previous)} 上生成夹具后再准备 {version}"
+                )
+            migration_writes = scaffold_empty_migration(root, previous, version)
+        else:
+            raise ValueError(
+                f"{DATA_VERSION_FILE} 当前末端版本为 {chain[-1]}，"
+                f"既不是当前已发布版本 {previous}，也不是待准备版本 {version}"
+            )
+
     dict_version = dictionary_release.load_release(root)["version"]
     pbx_path = root / PBXPROJ
     updated_pbx = write_project_version(pbx_path.read_text(encoding="utf-8"), version, next_build)
-    paths = [pbx_path, notes]
+    paths = [pbx_path, *[p for p, _ in migration_writes], notes]
 
     config = release_ai.load_config(root)
     if config.provider != "none":
@@ -332,15 +576,18 @@ def prepare(root: Path, version: str, *, dry_run: bool = False, base_tag: str | 
             print(f"将调用 {config.provider}{model_note} 生成发布说明草稿（dry-run 不调用模型）")
         return paths
 
-    # Draft notes first: if the agent fails, project.pbxproj stays untouched.
+    # Draft notes first: if the agent fails, project.pbxproj and migration files stay untouched.
     template = draft_notes(version, previous, next_build, dict_version, base_tag=base_tag,
-                           ai_review=config.provider != "none")
+                           ai_review=config.provider != "none", rebuilds_content=rebuilds_content)
     if config.provider == "none":
         notes.parent.mkdir(parents=True, exist_ok=True)
         notes.write_text(template, encoding="utf-8")
     else:
         release_ai.generate(root, version, previous, config, template=template, target=notes.relative_to(root),
                             base_tag=base_tag, kind="app")
+    for path, content in migration_writes:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     pbx_path.write_text(updated_pbx, encoding="utf-8")
     check(root, version)
     return paths
@@ -447,6 +694,49 @@ def build(root: Path, *, allow_unreleased: bool = False) -> Path:
     return package_ipa(app_dir, root / BUILD_DIR, version, build_number, core_version=core_version)
 
 
+def generate_fixture(
+    root: Path,
+    version: str | None = None,
+    *,
+    destination: str = "platform=iOS Simulator,name=iPhone 17 Pro",
+) -> Path:
+    """Generates ReadlingTests/Fixtures/AppData/<version>.bundle for a released version."""
+    current, _ = check(root, version)
+    target = normalize_version(version) if version is not None else current
+    if target == UNRELEASED_VERSION:
+        raise ValueError("未发布基线不能生成数据夹具")
+    bundle = fixture_bundle_path(root, target)
+    if bundle.exists():
+        raise ValueError(f"{bundle.relative_to(root)} 已存在；已发布版本的数据夹具已冻结，不能覆盖")
+    if not shutil.which("xcodebuild"):
+        raise ValueError("找不到 xcodebuild；生成数据夹具需要在安装 Xcode 的 macOS 上运行")
+    staging = Path(tempfile.mkdtemp(prefix=f"readling-fixture-{target}-"))
+    try:
+        env = dict(os.environ, TEST_RUNNER_READLING_WRITE_FIXTURE=str(staging))
+        command = [
+            "xcodebuild",
+            "-project", str(root / "Readling.xcodeproj"),
+            "-scheme", APP_NAME,
+            "-destination", destination,
+            "test",
+            "-only-testing:ReadlingTests/writeCurrentDataFixtureWhenRequested()",
+        ]
+        res = subprocess.run(command, cwd=root, env=env)
+        if res.returncode != 0 or not fixture_is_complete(staging):
+            raise ValueError("xcodebuild 生成数据夹具失败")
+        (staging / "GENERATE.md").write_text(
+            f"# v{target} 数据夹具\n\n"
+            f"在 `{tag(target)}` 上由 `python3 Tools/app_release.py fixture {target}` 生成并冻结，不要手改。\n",
+            encoding="utf-8",
+        )
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staging), str(bundle))
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+    return bundle
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -464,6 +754,11 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--allow-unreleased", action="store_true",
                               help="允许在 0.0.0 未发布基线下运行编译与打包校验（供日常 CI 验证）")
 
+    fixture_parser = commands.add_parser("fixture", help="在发布 tag 上生成该版本的测试数据夹具")
+    fixture_parser.add_argument("version", nargs="?")
+    fixture_parser.add_argument("--destination", default="platform=iOS Simulator,name=iPhone 17 Pro",
+                                help="运行夹具生成的 iOS 模拟器 destination")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -476,6 +771,9 @@ def main(argv: list[str] | None = None) -> int:
             label = f"{UNRELEASED_VERSION}（未发布基线，Build {build_number}）" if version == UNRELEASED_VERSION \
                 else f"{tag(version)} (Build {build_number})"
             print(f"App 版本校验通过：{label}")
+        elif args.command == "fixture":
+            bundle = generate_fixture(ROOT, args.version, destination=args.destination)
+            print(f"已生成数据夹具 {bundle.relative_to(ROOT)}")
         else:
             archive = build(ROOT, allow_unreleased=args.allow_unreleased)
             print(f"已打包 {archive.relative_to(ROOT)} 与 {(archive.parent / 'SHA256SUMS').relative_to(ROOT)}")
