@@ -61,8 +61,10 @@ struct ReadingSurface: UIViewRepresentable {
     }
 
     /// The exact string the view displays is chapter.text, so stored offsets never drift.
+    /// `width` is the width the text is laid out in; tables choose their layout by it, and without it are stacked.
     static func attributedText(for chapter: ReaderChapter, size: CGFloat, layout: ReaderLayout = ReaderLayout(),
-                               ink: UIColor = .readerInk, accent: UIColor = .readerAccent, resources: URL? = nil) -> NSAttributedString {
+                               ink: UIColor = .readerInk, accent: UIColor = .readerAccent, resources: URL? = nil,
+                               width: CGFloat? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString(string: chapter.text)
         let full = NSRange(location: 0, length: result.length)
         let face = layout.typeface
@@ -93,6 +95,11 @@ struct ReadingSurface: UIViewRepresentable {
             }
         }
 
+        /// Whether the attachment at a run is all its paragraph holds; such a picture or formula stands as a block.
+        func standsAlone(_ run: TextStyleRun) -> Bool {
+            text.substring(with: text.paragraphRange(for: run.range)).allSatisfy { $0 == "\u{FFFC}" || $0 == "\n" }
+        }
+
         // Inline styles and headings first; the paragraph-level ones below adjust the paragraph styles they leave.
         for run in runs {
             switch run.style {
@@ -115,6 +122,14 @@ struct ReadingSurface: UIViewRepresentable {
             case .image:
                 guard let resources, let file = run.value else { continue }
                 result.addAttribute(.attachment, value: ReaderImageAttachment(url: resources.appendingPathComponent(file), alt: run.alt), range: run.range)
+            case .math:
+                guard let latex = run.value else { continue }
+                // The formula takes the size of the text around it (a superscript's formula is small too).
+                let font = result.attribute(.font, at: run.location, effectiveRange: nil) as? UIFont
+                result.addAttribute(.attachment, value: ReaderMathAttachment(latex: latex, pointSize: font?.pointSize ?? size, color: ink,
+                                                                             typeface: face, display: standsAlone(run)), range: run.range)
+            case .rule:
+                result.addAttribute(.attachment, value: ReaderRuleAttachment(color: ink, pointSize: size), range: run.range)
             case .heading:
                 // Headings found in plain text have no level and keep the size they always had.
                 let scale: CGFloat = switch run.value { case "1": 1.4; case "2": 1.25; case "3": 1.12; case nil: 1.25; default: 1.0 }
@@ -125,7 +140,7 @@ struct ReadingSurface: UIViewRepresentable {
                 heading.hyphenationFactor = 0
                 result.addAttribute(.font, value: ReaderTypography.font(face, size: size * scale, traits: .traitBold), range: run.range)
                 result.addAttribute(.paragraphStyle, value: heading, range: text.paragraphRange(for: run.range))
-            case .quote, .list, .center:
+            case .quote, .list, .center, .table:
                 break
             }
         }
@@ -134,13 +149,16 @@ struct ReadingSurface: UIViewRepresentable {
             case .quote: adjust(run.range) { $0.firstLineHeadIndent += 22; $0.headIndent += 22 }
             case .list: adjust(run.range) { $0.firstLineHeadIndent += 20; $0.headIndent += 20; $0.paragraphSpacing = size * 0.25 }
             case .center: adjust(run.range) { $0.alignment = .center; $0.hyphenationFactor = 0 }
-            case .image:
-                // A picture alone in its paragraph sits in the middle with no extra leading around it.
-                let own = text.paragraphRange(for: run.range)
-                guard text.substring(with: own).allSatisfy({ $0 == "\u{FFFC}" || $0 == "\n" }) else { continue }
+            case .image, .math, .rule:
+                // A picture, formula or rule alone in its paragraph sits in the middle with no extra leading around it.
+                guard standsAlone(run) else { continue }
                 adjust(run.range) { $0.alignment = .center; $0.lineHeightMultiple = 1 }
             default: break
             }
+        }
+        // Tables last: they measure their cells as styled above and set the rows' paragraph styles whole.
+        for run in runs where run.style == .table {
+            ReaderTables.apply(run, to: result, size: size, width: width, base: paragraph)
         }
         return result
     }
@@ -179,11 +197,15 @@ struct ReadingSurface: UIViewRepresentable {
     final class ReaderTextView: UITextView {
         var didLayout: (() -> Void)?
         var willChangeWidth: (() -> Void)?
+        /// The width changed, including the first time it is known; called before the text is laid out at it.
+        var widthChanged: (() -> Void)?
         private var laidOutWidth: CGFloat = 0
 
         override func layoutSubviews() {
             if laidOutWidth > 0, abs(bounds.width - laidOutWidth) > 0.5 { willChangeWidth?() }
+            let changed = abs(bounds.width - laidOutWidth) > 0.5
             laidOutWidth = bounds.width
+            if changed { widthChanged?() }
             updateWindowInsets()
             super.layoutSubviews()
             didLayout?()
@@ -214,6 +236,8 @@ struct ReadingSurface: UIViewRepresentable {
         private weak var textView: ReaderTextView?
         private var renderedChapterID: String?
         private var renderedStyle: (size: CGFloat, layout: ReaderLayout, palette: ReaderPalette)?
+        /// The text width tables were laid out for; nil when the chapter has none, since then the width doesn't matter.
+        private var renderedTableWidth: CGFloat?
         private var wordRanges: [NSRange] = []
         private var marked: [NSRange] = []
         private var pendingAnchor: Int?
@@ -244,6 +268,11 @@ struct ReadingSurface: UIViewRepresentable {
                 guard let self, let view, self.textView === view, self.pendingAnchor == nil else { return }
                 self.pendingAnchor = self.lastVisibleOffset
             }
+            view.widthChanged = { [weak self, weak view] in
+                guard let self, let view, self.textView === view, let rendered = self.renderedTableWidth,
+                      abs(self.textWidth(in: view) - rendered) > 0.5 else { return }
+                self.render(in: view)
+            }
             let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
             tap.cancelsTouchesInView = false
             tap.delegate = self
@@ -269,6 +298,7 @@ struct ReadingSurface: UIViewRepresentable {
             view.delegate = nil
             view.didLayout = nil
             view.willChangeWidth = nil
+            view.widthChanged = nil
             textView = nil
         }
 
@@ -282,9 +312,7 @@ struct ReadingSurface: UIViewRepresentable {
                 let anchor = pendingAnchor ?? (chapterChanged ? value.initialOffset : visibleOffset(in: view))
                 let margin = value.layout.margin
                 view.textContainerInset = UIEdgeInsets(top: 24, left: margin, bottom: 96, right: margin)
-                view.attributedText = ReadingSurface.attributedText(for: value.chapter, size: size, layout: value.layout,
-                                                                    ink: value.palette.ink, accent: value.palette.accent,
-                                                                    resources: value.resources)
+                render(in: view)
                 view.tintColor = value.palette.accent
                 if chapterChanged {
                     wordRanges = ReadingSurface.englishWordRanges(in: value.chapter.text)
@@ -293,8 +321,6 @@ struct ReadingSurface: UIViewRepresentable {
                 }
                 renderedChapterID = value.chapter.id
                 renderedStyle = (size, value.layout, value.palette)
-                marked = []
-                flash.forget()
                 pendingAnchor = anchor
                 view.setNeedsLayout()
             }
@@ -310,6 +336,27 @@ struct ReadingSurface: UIViewRepresentable {
             }
             if view.isSelectable != value.interactive { view.isSelectable = value.interactive }
             if value.autoScrollSpeed != nil { startAutoScroll() } else { stopAutoScroll() }
+        }
+
+        /// Sets the chapter's text for the current settings and width, then puts the saved-word marks back.
+        private func render(in view: ReaderTextView) {
+            let value = parent
+            let hasTables = value.chapter.styles.contains { $0.style == .table }
+            let width = textWidth(in: view)
+            view.attributedText = ReadingSurface.attributedText(for: value.chapter, size: ReaderTypography.pointSize(value.layout.fontSize),
+                                                                layout: value.layout, ink: value.palette.ink, accent: value.palette.accent,
+                                                                resources: value.resources, width: width > 1 ? width : nil)
+            renderedTableWidth = hasTables ? width : nil
+            marked = []
+            flash.forget()
+            if !value.markedRanges.isEmpty {
+                ReaderTextTools.applyMarks(value.markedRanges, replacing: [], color: value.palette.accent, in: view.textStorage)
+                marked = value.markedRanges
+            }
+        }
+
+        private func textWidth(in view: ReaderTextView) -> CGFloat {
+            view.bounds.width - view.textContainerInset.left - view.textContainerInset.right
         }
 
         // MARK: Layout and position

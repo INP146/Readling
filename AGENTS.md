@@ -6,8 +6,10 @@ iOS 英文阅读器（SwiftUI，iOS 26，Xcode 26.3+）。离线 EPUB/TXT 导入
 
 ## 结构
 - `Readling/` 应用源码
-  - `BookImporter.swift` EPUB/TXT 导入（依赖 SPM 包 ZIPFoundation）
+  - `BookImporter.swift` EPUB/TXT 导入（依赖 SPM 包 ZIPFoundation；公式排版依赖 SwiftMath）
   - `ChapterText.swift` 统一的“纯文本 + 样式区间”章节构建；`HTMLEntities.swift` 实体表
+  - `MathML.swift` 公式：导入时把 MathML 转成 LaTeX 存进章节（书里自带可排版的 TeX 注解就直接用；为 MathJax 准备的书在正文里写 `\( \)`、`\[ \]`、`$$ $$` 包住的 TeX，能排版的也画成公式，单个 `$` 不认），`ReaderMath.swift` 用 SPM 包 SwiftMath 把公式画成行内附件（独占一段时为居中的 display 样式），另有分隔线 `hr` 附件
+  - `ReaderTable.swift` 表格：仍是可查词的文字（每行一段、单元格之间用 tab），按显示宽度选择排版：放得下就用制表位排成网格（数字列右对齐），放不下就让单元格逐行堆叠（行内唯一的制表位放在行尾，靠它换行；iOS 的 TextKit 不认 `NSLayoutManagerDelegate` 对 tab 返回的换行动作）
   - `LibraryStore.swift` 书库持久化（`library.json` v2 + `books/<uuid>.json`，含 v1 迁移）
   - `ReaderView.swift` 阅读页与悬浮的玻璃按钮（轻点正文显示右上关闭、右下菜单，菜单展开为目录/搜索/主题与设置等；“目录”行左右拖动即进度条，按各章字数换算全书位置）；`ReadingSurface.swift` 上下滚动正文；`PagedSurface.swift` 分页正文（仿真/覆盖/平移/无动画；每页从上一页结束处起在页面大小的容器里单独排版，装下的就是这一页，显示的也正是这次排版）
   - `ReaderPanels.swift` 主题与设置 sheet（字体/间距/更多设置在其中推入）、书内搜索；`ReaderStyle.swift` 排版、配色主题、背景纹理
@@ -66,6 +68,7 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
 
 ## 已知坑
 - 一个 `NSLayoutManager` 挂多个 `NSTextContainer` 时，只有显示第一个容器的 `UITextView` 能被选择，其余的 `isSelectable` 会被强制为 false（设为 true 也无效）。
+- `NSLayoutManagerDelegate.layoutManager(_:shouldUse:forControlCharacterAt:)` 对 tab 返回 `.lineBreak`/`.paragraphBreak`/`.containerBreak`（iOS 26 模拟器实测）都不会换行，只会把 tab 的宽度清零。要在 tab 处换行，就把制表位放在行尾附近（不能超出行宽，否则会多出一个空行）。
 - `textViewDidChangeSelection`（iOS 26 模拟器实测）：拖选区手柄只在松手时回调一次；长按后不松手继续滑动会逐词回调，松手后约 7ms 还会再微调一次选区。
 - 系统控件的 iOS 26 液态玻璃样式没有公开开关时（例如 `UISegmentedControl` 静止时轨道是普通填充，`backgroundColor` 无效，`setBackgroundImage` 会让控件退回旧式绘制、连选中滑块一起丢掉）：
   1. 用 `control.value(forKey: "recursiveDescription")` 把视图层级写到 `/tmp`，看清楚是哪一层在画；

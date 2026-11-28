@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		C10000000000000000000001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000002 /* ZIPFoundation */; };
+		C10000000000000000000011 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000012 /* SwiftMath */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C10000000000000000000001 /* ZIPFoundation in Frameworks */,
+				C10000000000000000000011 /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +106,7 @@
 			name = Readling;
 			packageProductDependencies = (
 				C10000000000000000000002 /* ZIPFoundation */,
+				C10000000000000000000012 /* SwiftMath */,
 			);
 			productName = Readling;
 			productReference = E1D1C645818EB0816572F68E /* Readling.app */;
@@ -180,6 +183,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C10000000000000000000004 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				C10000000000000000000014 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A0906AD77C76E090572F0E63 /* Products */;
@@ -518,6 +522,14 @@
 				version = 0.9.20;
 			};
 		};
+		C10000000000000000000014 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.7.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -525,6 +537,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C10000000000000000000004 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		C10000000000000000000012 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C10000000000000000000014 /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -78,7 +78,8 @@ final class PagedChapter {
         self.accent = accent
         wordRanges = ReadingSurface.englishWordRanges(in: chapter.text)
         let full = NSTextStorage(attributedString: ReadingSurface.attributedText(for: chapter, size: size, layout: layout,
-                                                                                             ink: ink, accent: accent, resources: resources))
+                                                                                             ink: ink, accent: accent, resources: resources,
+                                                                                             width: pageSize.width))
         marked = ReaderTextTools.markedRanges(in: chapter.text, words: wordRanges, forms: forms)
         ReaderTextTools.applyMarks(marked, replacing: [], color: accent, in: full)
         // Each page is handed some text past what it can hold; a generous first guess saves laying out twice.

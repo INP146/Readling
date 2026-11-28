@@ -422,7 +422,7 @@ enum BookImporter {
         }
     }
 
-    private static func render(_ node: XMLTree.Node, into renderer: inout ChapterRenderer) throws {
+    static func render(_ node: XMLTree.Node, into renderer: inout ChapterRenderer) throws {
         if Task.isCancelled { throw CancellationError() }
         let name = node.name.lowercased()
         if name == "svg" {
@@ -430,6 +430,10 @@ enum BookImporter {
             for image in node.descendants("image") {
                 if let reference = image.attribute("href") { renderer.image(reference: reference, alt: node.attribute("aria-label")) }
             }
+            return
+        }
+        if name == "math" || name.hasSuffix(":math") {
+            renderer.math(node)
             return
         }
         guard renderer.enter(name, node.attributes) else { return }

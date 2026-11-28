@@ -18,7 +18,14 @@ struct TextStyleRun: Codable, Equatable, Sendable {
         case link
         /// One attachment character (U+FFFC); `value` names the stored image file and `alt` is its description.
         case image
+        /// One attachment character drawn as a formula; `value` is its LaTeX and `alt` its text, for reading aloud and copying.
+        case math
+        /// One attachment character drawn as a horizontal rule (`hr`), alone in its paragraph.
+        case rule
         // Paragraph-level: the style applies to every paragraph the run touches.
+        /// A table: each paragraph is a row and tabs separate its cells. `value` gives each row's cells as their
+        /// column spans, rows split by ";" and cells by ",", e.g. "1,1,1;3" (see `TableShape`).
+        case table
         /// `value` is the level, "1" to "6"; absent for headings found in plain text.
         case heading
         case quote, list, center
