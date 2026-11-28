@@ -1,12 +1,12 @@
 import Foundation
 
-/// The data v0.2.0 writes. Frozen once v0.2.0 is released (see docs/data-versioning.md).
+/// The data vNext writes. Frozen once vNext is released (see docs/data-versioning.md).
 ///
 /// Changes from v0.1.0:
 /// - `library.json` `version` 3: each book names its reading-text file (`contentFile`), since text rebuilt from the
 ///   stored original goes to a new file (`content-<n>.json`) before the library switches to it.
 /// - `data-version.json` records the version of the whole data directory.
-enum V0_2_0 {
+enum VNext {
     struct Library: Codable {
         var version: Int // Always 3.
         var books: [Book]

@@ -5,33 +5,55 @@ import Foundation
 /// The whole data directory has one version: the app version it was last migrated to. Migrations run only between
 /// neighbouring versions of `chain`, one step per pair, so an upgrade across several releases runs every step between.
 enum DataVersion {
-    /// Every released version in order, then the version in development. A version's entry, snapshot and migration
-    /// step are frozen once it is released. `Tools/app_release.py check` keeps this list in step with the git tags.
-    static let chain = ["0.1.0", "0.2.0"]
+    /// Every released version in order, then `next` while the release after them is in development. A version's
+    /// entry, snapshot and migration step are frozen once it is released. `next` gets its number only when
+    /// `Tools/app_release.py prepare` names the release; `post-release` opens it again after tagging.
+    static let chain = ["0.1.0", "next"]
 
-    /// The version this build writes.
-    static var current: String { chain[chain.count - 1] }
+    /// The entry of `chain` for the version in development, whose number isn't decided yet.
+    static let next = "next"
+
+    /// The version this build writes. A development build writes `<last release>+next`, so its data is never taken
+    /// for the release's.
+    static var current: String { label(at: chain.count - 1, in: chain) }
 
     /// One step per neighbouring pair of `chain`, in order.
     static let migrations: [Migration] = [
-        Migration_0_1_0_to_0_2_0.migration,
+        Migration_0_1_0_to_Next.migration,
     ]
 
     /// The version before data-version.json existed: v0.1.0 wrote only library.json.
     static let first = "0.1.0"
 
     /// Settings keys of the current snapshot, checked against `SettingsKeys.all` in tests.
-    static let currentSettingsKeys = V0_2_0.settingsKeys
+    static let currentSettingsKeys = VNext.settingsKeys
 
+    /// The version written for `chain[index]`.
+    static func label(at index: Int, in chain: [String]) -> String {
+        chain[index] == next && index > 0 ? "\(chain[index - 1])+next" : chain[index]
+    }
+
+    /// Where data at `version` stands on `chain`. Data of a development build, `X+next`, ran the step out of `X`
+    /// as it was then, so it stands at the version after `X`: still `next` while that is in development, or the
+    /// release it became.
+    static func index(of version: String, in chain: [String] = chain) -> Int? {
+        if version != next, let index = chain.firstIndex(of: version) { return index }
+        guard version.hasSuffix("+next"), let base = chain.firstIndex(of: String(version.dropLast(5))),
+              base + 1 < chain.count else { return nil }
+        return base + 1
+    }
+
+    /// SemVer order; `X+next` comes right after `X` and before any later release.
     static func compare(_ a: String, _ b: String) -> ComparisonResult {
-        func key(_ value: String) -> (Int, Int, Int, Int) {
-            let halves = value.split(separator: "-rc", maxSplits: 1)
+        func key(_ value: String) -> (Int, Int, Int, Int, Int) {
+            let development = value.hasSuffix("+next")
+            let halves = (development ? String(value.dropLast(5)) : value).split(separator: "-rc", maxSplits: 1)
             let numbers = halves[0].split(separator: ".").map { Int($0) ?? 0 }
             let major = numbers.count > 0 ? numbers[0] : 0
             let minor = numbers.count > 1 ? numbers[1] : 0
             let patch = numbers.count > 2 ? numbers[2] : 0
             let rc = halves.count > 1 ? (Int(halves[1]) ?? 0) : Int.max
-            return (major, minor, patch, rc)
+            return (major, minor, patch, rc, development ? 1 : 0)
         }
         let (x, y) = (key(a), key(b))
         if x == y { return .orderedSame }
@@ -40,7 +62,7 @@ enum DataVersion {
 
     /// The steps that take data at `version` to `current`, or nil when `version` isn't on the chain.
     static func steps(from version: String) -> [Migration]? {
-        guard let start = chain.firstIndex(of: version) else { return nil }
+        guard let start = index(of: version) else { return nil }
         return Array(migrations[start...])
     }
 }

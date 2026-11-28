@@ -5,7 +5,7 @@
                                                 (with RELEASE_AI_PROVIDER in .env, codex/claude writes the draft)
   check [TAG] [--require-notes]                 project.pbxproj, data migrations, bundled dictionary and notes agree
   build [--allow-unreleased]                    compile unsigned Release iOS app, verify bundle and package IPA
-  fixture [TAG] [--destination DEST]            generate ReadlingTests/Fixtures/AppData/<version>.bundle after tagging
+  post-release [TAG] [--destination DEST]       after tagging: freeze the data fixture of TAG and open `next`
 
 Never commits, tags or pushes. Standard library only; runs on macOS Python 3.9+.
 """
@@ -41,6 +41,9 @@ DERIVED_DATA = Path("build/DerivedData")
 APP_NAME = "Readling"
 BUNDLE_ID = "com.inp146.readling"
 UNRELEASED_VERSION = "0.0.0"
+# The last entry of DataVersion.chain while the release after the last one is in development; prepare names it.
+NEXT = "next"
+SWIFT_SOURCE_DIRS = (Path("Readling"), Path("ReadlingTests"))
 VERSION_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-rc([1-9]\d*))?")
 TODO = "RELEASE_TODO"
 REQUIRED_HEADINGS = ("## 主要变更", "## 安装与重签", "## 升级与兼容")
@@ -100,7 +103,12 @@ def sha256_file(path: Path) -> str:
 
 
 def version_identifier(version: str) -> str:
-    return version.replace(".", "_").replace("-", "_")
+    return "Next" if version == NEXT else version.replace(".", "_").replace("-", "_")
+
+
+def version_label(version: str) -> str:
+    """How code comments name a version: `v0.2.0`, or `vNext` until prepare names it."""
+    return "vNext" if version == NEXT else f"v{version}"
 
 
 def snapshot_name(version: str) -> str:
@@ -138,13 +146,16 @@ def read_data_version(root: Path) -> tuple[list[str], list[str], str]:
 
 
 def scaffold_empty_migration(root: Path, from_version: str, to_version: str) -> list[tuple[Path, str]]:
-    """Builds the snapshot, empty migration step, and updated DataVersion.swift for a release with no data changes."""
+    """Builds the snapshot, empty migration step, and updated DataVersion.swift that open `to_version`.
+
+    Normally `to_version` is NEXT, opened by post-release; prepare uses a number only when post-release never ran.
+    """
     from_snap = snapshot_name(from_version)
     to_snap = snapshot_name(to_version)
     mig_type = migration_name(from_version, to_version)
     snapshot_text = f"""import Foundation
 
-/// The data v{to_version} writes. Frozen once v{to_version} is released (see docs/data-versioning.md).
+/// The data {version_label(to_version)} writes. Frozen once {version_label(to_version)} is released (see docs/data-versioning.md).
 enum {to_snap} {{
     typealias Library = {from_snap}.Library
     typealias Book = {from_snap}.Book
@@ -156,7 +167,7 @@ enum {to_snap} {{
 """
     migration_text = f"""import Foundation
 
-/// v{from_version} → v{to_version}: no source-data or reading-text changes.
+/// v{from_version} → {version_label(to_version)}: no source-data or reading-text changes.
 enum {mig_type} {{
     static let migration = Migration(from: "{from_version}", to: "{to_version}") {{ _ in }}
 }}
@@ -188,6 +199,53 @@ enum {mig_type} {{
         (root / MIGRATIONS_DIR / f"{mig_type}.swift", migration_text),
         (dv_path, dv_text),
     ]
+
+
+def name_next(root: Path, previous: str, version: str) -> tuple[list[tuple[Path, str]], list[Path]]:
+    """Gives `next` its release number: renames VNext and Migration_<previous>_to_Next and every use of them.
+
+    Returns the files to write and the files to remove; nothing is touched here.
+    """
+    old_snap, new_snap = snapshot_name(NEXT), snapshot_name(version)
+    old_mig, new_mig = migration_name(previous, NEXT), migration_name(previous, version)
+    old_snap_path = root / SNAPSHOTS_DIR / f"{old_snap}.swift"
+    old_mig_path = root / MIGRATIONS_DIR / f"{old_mig}.swift"
+    for path in (old_snap_path, old_mig_path):
+        if not path.is_file():
+            raise ValueError(f"缺少开发中的 {path.relative_to(root)}")
+    for path in (root / SNAPSHOTS_DIR / f"{new_snap}.swift", root / MIGRATIONS_DIR / f"{new_mig}.swift"):
+        if path.exists():
+            raise ValueError(f"{path.relative_to(root)} 已存在，无法把 {NEXT} 命名为 {version}")
+
+    def rename(text: str) -> str:
+        text = re.sub(rf"\b{old_snap}\b", new_snap, text)
+        text = re.sub(rf"\b{old_mig}\b", new_mig, text)
+        return re.sub(r"\bvNext\b", f"v{version}", text)
+
+    writes: list[tuple[Path, str]] = []
+    for source_dir in SWIFT_SOURCE_DIRS:
+        for path in sorted((root / source_dir).rglob("*.swift")):
+            if path in (old_snap_path, old_mig_path):
+                continue
+            text = path.read_text(encoding="utf-8")
+            updated = rename(text)
+            if path == root / DATA_VERSION_FILE:
+                updated, count = re.subn(
+                    r"(static\s+let\s+chain\s*(?::\s*\[String\])?\s*=\s*\[[^\]]*)\"next\"([^\]]*\])",
+                    lambda m: f'{m.group(1)}"{version}"{m.group(2)}', updated, count=1)
+                if count != 1:
+                    raise ValueError(f"无法在 {DATA_VERSION_FILE} 的 chain 中把 {NEXT} 改为 {version}")
+            if updated != text:
+                writes.append((path, updated))
+
+    writes.append((root / SNAPSHOTS_DIR / f"{new_snap}.swift", rename(old_snap_path.read_text(encoding="utf-8"))))
+    mig_text = rename(old_mig_path.read_text(encoding="utf-8"))
+    declaration = f'Migration(from: "{previous}", to: "{NEXT}")'
+    if declaration not in mig_text:
+        raise ValueError(f"{old_mig_path.relative_to(root)} 必须声明 {declaration}")
+    mig_text = mig_text.replace(declaration, f'Migration(from: "{previous}", to: "{version}")')
+    writes.append((root / MIGRATIONS_DIR / f"{new_mig}.swift", mig_text))
+    return writes, [old_snap_path, old_mig_path]
 
 
 def merged_app_tags(root: Path) -> list[str]:
@@ -234,8 +292,18 @@ def check_data_versioning(
 
     if not chain:
         return [f"{DATA_VERSION_FILE} 的 chain 不能为空"]
+    developing = chain[-1] == NEXT
+    released = chain[:-1] if developing else chain
     valid_chain = True
-    for item in chain:
+    if NEXT in released:
+        errors.append(f"{DATA_VERSION_FILE} 的 chain 只有最后一项可以是 {NEXT}")
+        valid_chain = False
+    if developing and len(chain) < 2:
+        errors.append(f"{DATA_VERSION_FILE} 的 chain 在 {NEXT} 之前至少要有一个已发布版本")
+        valid_chain = False
+    for item in released:
+        if item == NEXT:
+            continue
         try:
             normalize_version(item)
         except ValueError as exc:
@@ -244,7 +312,7 @@ def check_data_versioning(
     if valid_chain:
         if chain[0] != "0.1.0":
             errors.append(f"{DATA_VERSION_FILE} 的迁移链起点应为 0.1.0，当前为 {chain[0]}")
-        for a, b in zip(chain, chain[1:]):
+        for a, b in zip(released, released[1:]):
             if version_key(a) >= version_key(b):
                 errors.append(f"{DATA_VERSION_FILE} 的 chain 必须严格递增：{a} -> {b}")
 
@@ -273,20 +341,23 @@ def check_data_versioning(
             if f'Migration(from: "{a}", to: "{b}")' not in mig_text:
                 errors.append(f'{mig_path.relative_to(root)} 必须声明 Migration(from: "{a}", to: "{b}")')
 
-    for released in chain[:-1]:
-        bundle = fixture_bundle_path(root, released)
+    for fixture_version in chain[:-1]:
+        bundle = fixture_bundle_path(root, fixture_version)
         if not fixture_is_complete(bundle):
             errors.append(f"缺少已发布版本的数据夹具 {bundle.relative_to(root)}")
 
     if project_version and project_version != UNRELEASED_VERSION and valid_chain:
-        allowed = {chain[-1]} | ({chain[-2]} if len(chain) >= 2 else set())
-        if project_version not in allowed:
+        # In development the project keeps the last release's number; prepare names both at once.
+        expected = released[-1]
+        if project_version != expected:
             errors.append(
-                f"{PBXPROJ} 的版本 {project_version} 与 {DATA_VERSION_FILE} 末端 {chain[-1]} 不匹配"
+                f"{PBXPROJ} 的版本 {project_version} 应为 {expected}"
+                f"（{DATA_VERSION_FILE} 的 chain 为 {chain}）"
             )
 
     if target_version is not None and chain[-1] != target_version:
-        errors.append(f"待发布版本 {target_version} 与 {DATA_VERSION_FILE} 末端 {chain[-1]} 不一致")
+        hint = f"，请先运行 prepare {target_version}" if developing else ""
+        errors.append(f"待发布版本 {target_version} 与 {DATA_VERSION_FILE} 末端 {chain[-1]} 不一致{hint}")
 
     for tagged in merged_app_tags(root):
         if tagged not in chain:
@@ -541,29 +612,33 @@ def prepare(root: Path, version: str, *, dry_run: bool = False, base_tag: str | 
         raise ValueError(f"{notes.relative_to(root)} 已存在；为保留已有说明，未修改任何文件")
 
     migration_writes: list[tuple[Path, str]] = []
+    migration_removals: list[Path] = []
     rebuilds_content = False
     if (root / DATA_VERSION_FILE).is_file() and previous is not None:
         chain, _, _ = read_data_version(root)
-        if chain[-1] == version:
-            rebuilds_content = len(chain) >= 2 and step_requests_content_rebuild(root, chain[-2], version)
+        if chain[-1] == NEXT:
+            # The usual case: post-release opened `next` after the last release, and now it gets its number.
+            rebuilds_content = step_requests_content_rebuild(root, chain[-2], NEXT)
+            migration_writes, migration_removals = name_next(root, previous, version)
         elif chain[-1] == previous:
+            # post-release never opened `next`: this release changes no data.
             prev_bundle = fixture_bundle_path(root, previous)
             if not fixture_is_complete(prev_bundle):
                 raise ValueError(
                     f"缺少已发布版本的数据夹具 {prev_bundle.relative_to(root)}；"
-                    f"请先在 {tag(previous)} 上生成夹具后再准备 {version}"
+                    f"请先运行 python3 Tools/app_release.py post-release {tag(previous)}"
                 )
             migration_writes = scaffold_empty_migration(root, previous, version)
         else:
             raise ValueError(
-                f"{DATA_VERSION_FILE} 当前末端版本为 {chain[-1]}，"
-                f"既不是当前已发布版本 {previous}，也不是待准备版本 {version}"
+                f"{DATA_VERSION_FILE} 当前末端为 {chain[-1]}，"
+                f"既不是 {NEXT}，也不是当前已发布版本 {previous}"
             )
 
     dict_version = dictionary_release.load_release(root)["version"]
     pbx_path = root / PBXPROJ
     updated_pbx = write_project_version(pbx_path.read_text(encoding="utf-8"), version, next_build)
-    paths = [pbx_path, *[p for p, _ in migration_writes], notes]
+    paths = [pbx_path, *[p for p, _ in migration_writes], *migration_removals, notes]
 
     config = release_ai.load_config(root)
     if config.provider != "none":
@@ -588,6 +663,8 @@ def prepare(root: Path, version: str, *, dry_run: bool = False, base_tag: str | 
     for path, content in migration_writes:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    for path in migration_removals:
+        path.unlink()
     pbx_path.write_text(updated_pbx, encoding="utf-8")
     check(root, version)
     return paths
@@ -694,23 +771,29 @@ def build(root: Path, *, allow_unreleased: bool = False) -> Path:
     return package_ipa(app_dir, root / BUILD_DIR, version, build_number, core_version=core_version)
 
 
-def generate_fixture(
-    root: Path,
-    version: str | None = None,
-    *,
-    destination: str = "platform=iOS Simulator,name=iPhone 17 Pro",
-) -> Path:
-    """Generates ReadlingTests/Fixtures/AppData/<version>.bundle for a released version."""
-    current, _ = check(root, version)
-    target = normalize_version(version) if version is not None else current
-    if target == UNRELEASED_VERSION:
-        raise ValueError("未发布基线不能生成数据夹具")
-    bundle = fixture_bundle_path(root, target)
-    if bundle.exists():
-        raise ValueError(f"{bundle.relative_to(root)} 已存在；已发布版本的数据夹具已冻结，不能覆盖")
+def ensure_head_is_tag(root: Path, version: str) -> None:
+    """The fixture must come from the tagged code: HEAD is the tag and tracked files are unchanged."""
+    git = shutil.which("git")
+    if not git:
+        raise ValueError("找不到 git")
+    def rev(ref: str) -> str:
+        res = subprocess.run([git, "rev-parse", "--verify", "--quiet", ref], cwd=root, capture_output=True, text=True)
+        return res.stdout.strip() if res.returncode == 0 else ""
+    tagged = rev(f"refs/tags/{tag(version)}^{{commit}}")
+    if not tagged:
+        raise ValueError(f"找不到 git tag {tag(version)}；请先打 tag 再运行 post-release")
+    if tagged != rev("HEAD"):
+        raise ValueError(f"HEAD 不是 {tag(version)}；请在该 tag 指向的提交上运行 post-release")
+    if subprocess.run([git, "diff", "--quiet", "HEAD"], cwd=root).returncode != 0:
+        raise ValueError("工作区有未提交的改动；数据夹具必须由 tag 上的代码生成")
+
+
+def generate_fixture(root: Path, version: str, *, destination: str) -> Path:
+    """Generates ReadlingTests/Fixtures/AppData/<version>.bundle with the code of the working tree."""
+    bundle = fixture_bundle_path(root, version)
     if not shutil.which("xcodebuild"):
         raise ValueError("找不到 xcodebuild；生成数据夹具需要在安装 Xcode 的 macOS 上运行")
-    staging = Path(tempfile.mkdtemp(prefix=f"readling-fixture-{target}-"))
+    staging = Path(tempfile.mkdtemp(prefix=f"readling-fixture-{version}-"))
     try:
         env = dict(os.environ, TEST_RUNNER_READLING_WRITE_FIXTURE=str(staging))
         command = [
@@ -725,8 +808,8 @@ def generate_fixture(
         if res.returncode != 0 or not fixture_is_complete(staging):
             raise ValueError("xcodebuild 生成数据夹具失败")
         (staging / "GENERATE.md").write_text(
-            f"# v{target} 数据夹具\n\n"
-            f"在 `{tag(target)}` 上由 `python3 Tools/app_release.py fixture {target}` 生成并冻结，不要手改。\n",
+            f"# v{version} 数据夹具\n\n"
+            f"在 `{tag(version)}` 上由 `python3 Tools/app_release.py post-release {tag(version)}` 生成并冻结，不要手改。\n",
             encoding="utf-8",
         )
         bundle.parent.mkdir(parents=True, exist_ok=True)
@@ -735,6 +818,37 @@ def generate_fixture(
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
     return bundle
+
+
+def post_release(
+    root: Path,
+    version: str | None = None,
+    *,
+    destination: str = "platform=iOS Simulator,name=iPhone 17 Pro",
+    make_fixture=generate_fixture,
+) -> list[Path]:
+    """After tagging a release: freezes its data fixture, then opens `next` with an empty step for development."""
+    current, _ = check(root, version)
+    target = normalize_version(version) if version is not None else current
+    if target == UNRELEASED_VERSION:
+        raise ValueError("未发布基线没有可收尾的版本")
+    ensure_head_is_tag(root, target)
+    paths: list[Path] = []
+    bundle = fixture_bundle_path(root, target)
+    if fixture_is_complete(bundle):
+        print(f"数据夹具 {bundle.relative_to(root)} 已存在，沿用")
+    elif bundle.exists():
+        raise ValueError(f"{bundle.relative_to(root)} 不完整；确认无用后删除再重试")
+    else:
+        paths.append(make_fixture(root, target, destination=destination))
+    if (root / DATA_VERSION_FILE).is_file():
+        writes = scaffold_empty_migration(root, target, NEXT)
+        for path, content in writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        paths.extend(path for path, _ in writes)
+    check(root)
+    return paths
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -754,9 +868,9 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--allow-unreleased", action="store_true",
                               help="允许在 0.0.0 未发布基线下运行编译与打包校验（供日常 CI 验证）")
 
-    fixture_parser = commands.add_parser("fixture", help="在发布 tag 上生成该版本的测试数据夹具")
-    fixture_parser.add_argument("version", nargs="?")
-    fixture_parser.add_argument("--destination", default="platform=iOS Simulator,name=iPhone 17 Pro",
+    post_parser = commands.add_parser("post-release", help="在发布 tag 上冻结该版本的数据夹具，并开启下一版（next）的迁移步骤")
+    post_parser.add_argument("version", nargs="?")
+    post_parser.add_argument("--destination", default="platform=iOS Simulator,name=iPhone 17 Pro",
                                 help="运行夹具生成的 iOS 模拟器 destination")
 
     args = parser.parse_args(argv)
@@ -771,9 +885,10 @@ def main(argv: list[str] | None = None) -> int:
             label = f"{UNRELEASED_VERSION}（未发布基线，Build {build_number}）" if version == UNRELEASED_VERSION \
                 else f"{tag(version)} (Build {build_number})"
             print(f"App 版本校验通过：{label}")
-        elif args.command == "fixture":
-            bundle = generate_fixture(ROOT, args.version, destination=args.destination)
-            print(f"已生成数据夹具 {bundle.relative_to(ROOT)}")
+        elif args.command == "post-release":
+            for path in post_release(ROOT, args.version, destination=args.destination):
+                print(f"已生成 {path.relative_to(ROOT)}")
+            print("请提交以上文件并推送 main；下一版的数据改动写进 *_to_Next 迁移步骤与 VNext 快照")
         else:
             archive = build(ROOT, allow_unreleased=args.allow_unreleased)
             print(f"已打包 {archive.relative_to(ROOT)} 与 {(archive.parent / 'SHA256SUMS').relative_to(ROOT)}")

@@ -55,11 +55,30 @@ struct DataMigrationTests {
         for (index, step) in DataVersion.migrations.enumerated() {
             #expect(step.from == chain[index] && step.to == chain[index + 1], "\(step.from) → \(step.to)")
         }
-        #expect(DataVersion.current == chain.last)
+        #expect(!chain.dropLast().contains(DataVersion.next), "only the last entry can be in development")
+        #expect(DataVersion.current == (chain.last == DataVersion.next ? "\(chain[chain.count - 2])+next" : chain.last))
+        #expect(DataVersion.index(of: DataVersion.current) == chain.count - 1)
         #expect(DataVersion.chain.first == DataVersion.first)
         #expect(DataVersion.compare("0.10.0", "0.9.1") == .orderedDescending)
         #expect(DataVersion.compare("0.2.0-rc1", "0.2.0-rc2") == .orderedAscending)
         #expect(DataVersion.compare("0.2.0-rc2", "0.2.0") == .orderedAscending)
+        #expect(DataVersion.compare("0.1.0", "0.1.0+next") == .orderedAscending)
+        #expect(DataVersion.compare("0.1.0+next", "0.1.1-rc1") == .orderedAscending)
+        #expect(DataVersion.compare("0.1.0+next", "0.1.0+next") == .orderedSame)
+    }
+
+    /// Data of a development build stands at the version after the release it started from, whether that is still
+    /// in development or has since been released under its number.
+    @Test func developmentDataStandsAtTheVersionAfterItsBase() {
+        let developing = ["0.1.0", "next"]
+        #expect(DataVersion.label(at: 1, in: developing) == "0.1.0+next")
+        #expect(DataVersion.index(of: "0.1.0+next", in: developing) == 1)
+        #expect(DataVersion.index(of: "next", in: developing) == nil)
+        let released = ["0.1.0", "0.2.0", "next"]
+        #expect(DataVersion.index(of: "0.1.0+next", in: released) == 1)
+        #expect(DataVersion.index(of: "0.2.0+next", in: released) == 2)
+        #expect(DataVersion.index(of: "0.2.0+next", in: ["0.1.0", "0.2.0"]) == nil)
+        #expect(DataVersion.index(of: "0.3.0+next", in: released) == nil)
         #expect(SettingsKeys.all == Set(DataVersion.currentSettingsKeys.keys))
     }
 
@@ -130,7 +149,7 @@ struct DataMigrationTests {
     /// already imported would keep reading the old way.
     @Test func changedTextIsRebuiltByTheStepInDevelopment() throws {
         // Once DataVersion.current has been released and its fixture saved, any later text change must first open
-        // the next version in DataVersion.chain.
+        // `next` in DataVersion.chain (app_release.py post-release).
         let currentReleased = InstalledFixture.url(of: DataVersion.current) != nil
         let baseline = currentReleased ? DataVersion.current : DataVersion.chain[DataVersion.chain.count - 2]
         let fixture = try InstalledFixture(baseline)
@@ -144,7 +163,7 @@ struct DataMigrationTests {
             if try BookBuilder.build(from: files, package: package).content.chapters != stored.chapters { changed.append(book.title) }
         }
         guard !changed.isEmpty else { return }
-        #expect(!currentReleased, "Text built differently from released \(baseline) for \(changed); open the next version in DataVersion.chain and request .content")
+        #expect(!currentReleased, "Text built differently from released \(baseline) for \(changed); run app_release.py post-release to open `next` in DataVersion.chain, then request .content")
         var context = MigrationContext(directory: fixture.directory, settings: fixture.settings.read())
         try #require(DataVersion.migrations.last).run(&context)
         #expect(context.rebuilds.contains(.content), "Text built differently from \(baseline) for \(changed); the step to \(DataVersion.current) must request .content")
@@ -385,7 +404,7 @@ private struct StoredBooks: Decodable {
 }
 
 /// Writes a data fixture for `DataVersion.current` when `$READLING_WRITE_FIXTURE` is set (invoked by
-/// `python3 Tools/app_release.py fixture` after tagging a release; a no-op during ordinary test runs).
+/// `python3 Tools/app_release.py post-release` after tagging a release; a no-op during ordinary test runs).
 @MainActor @Test func writeCurrentDataFixtureWhenRequested() async throws {
     guard let destination = ProcessInfo.processInfo.environment["READLING_WRITE_FIXTURE"], !destination.isEmpty else { return }
     let out = URL(fileURLWithPath: destination, isDirectory: true)

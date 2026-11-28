@@ -1,6 +1,6 @@
 # 数据版本与升级迁移
 
-状态：已实施（2026-11-28）。v0.1.0 是第一个公开版本，从 v0.2.0 起，所有本机数据的格式变化都按本文处理。
+状态：已实施（2026-11-28）。v0.1.0 是第一个公开版本，此后所有本机数据的格式变化都按本文处理。
 
 ## 1. 现状
 
@@ -32,13 +32,18 @@
 ## 3. 迁移
 
 ### 3.1 数据版本
-- `Application Support/Readling/data-version.json` 记录 `{"appVersion": "0.2.0"}`，即这份数据当前对应的 app 版本（SemVer）。
+- `Application Support/Readling/data-version.json` 记录 `{"appVersion": "0.2.0"}`，即这份数据当前对应的 app 版本（SemVer）。开发版写的是 `<上一个已发布版本>+next`（如 `0.1.0+next`），见 3.2。
 - 文件不存在时：有 `library.json`，就是 v0.1.0 的数据；什么都没有，就是全新安装，直接写入当前版本。
 - `library.json` 里原有的 `version` 字段保留，书库结构变了就加一。v0.1.0 只认这个字段，遇到更大的值会进入只读，这样它也不会覆盖新数据。
 
 ### 3.2 迁移链
-- 代码里有一份**版本列表** `DataVersion.chain`（见 `Readling/Persistence/DataVersion.swift`），如 `["0.1.0", "0.2.0", …]`，开发中的版本放在最后。发布脚本核对它和 git 的 `v*` tag 一致。
-- **相邻两个版本之间有且只有一个迁移步骤**，比如 `Migration_0_1_0_to_0_2_0`。数据没有变化的版本之间也要有一个步骤，写成空步骤即可（`Tools/app_release.py prepare` 在无新步骤时会自动生成），这样迁移链是连续的，一眼能看出每次升级做了什么。
+- 代码里有一份**版本列表** `DataVersion.chain`（见 `Readling/Persistence/DataVersion.swift`），如 `["0.1.0", "0.2.0", "next"]`：已发布的版本依次排列，开发中的下一版放在最后，写作占位名 `next`。发布脚本核对它和 git 的 `v*` tag 一致。
+- **下一版的版本号到发布时才定。** 刚发布完时还不知道下一版是 patch 还是 minor，所以开发中的那一步不用版本号命名：
+  - 发布并打 tag 后，`Tools/app_release.py post-release` 冻结该版本的夹具，同时开启 `next`：空快照 `VNext`、空步骤 `Migration_<刚发布的版本>_to_Next`，并把 `"next"` 追加到 `chain`。
+  - 开发中改了数据，就改这一步和 `VNext`。`project.pbxproj` 的版本号保持在上一个已发布版本。
+  - `prepare <版本>` 给 `next` 定下版本号：把 `VNext`、`Migration_…_to_Next` 及其所有引用（注释里的 `vNext` 也算）改成该版本号，`chain` 里的 `"next"` 换成版本号，同时更新 `project.pbxproj`。
+  - 开发版写入的数据版本是 `X+next`（X 为 `next` 前面的已发布版本）。按 SemVer 排序时，它排在 X 之后、X 的下一个正式版之前；在链上它的位置是 X 的下一项，开发期间是 `next`，发布后就是 `next` 改成的那个版本。所以下一轮开发时，开发设备上的旧开发版数据只会执行之后的步骤。开发版和正式版的 Bundle ID 不同，数据互相隔离，正式版不会读到 `+next` 的数据。
+- **相邻两个版本之间有且只有一个迁移步骤**，比如 `Migration_0_1_0_to_0_2_0`。数据没有变化的版本之间也要有一个步骤，写成空步骤即可（`post-release` 开启的就是空步骤；若发布后没有开启 `next`，`prepare` 也会补一个），这样迁移链是连续的，一眼能看出每次升级做了什么。
 - 跨多个版本升级时（如 0.1.0 → 0.4.0），就依次执行 0.1→0.2、0.2→0.3、0.3→0.4。**没有跨版本的捷径步骤。**
 - 一个步骤负责这次升级涉及的全部数据，不按文件拆成多套迁移。它可以做两件事：
   - **转换源数据**：书库、原书内容的描述文件、设置、Keychain；
@@ -108,10 +113,10 @@ App Store 本身不能装旧版本，只有通过 iosign 等方式侧载时才�
 ### 3.7 测试
 - `ReadlingTests/Fixtures/AppData/<版本>.bundle`：每个已发布版本保存一份真实数据目录，用当时 tag 上的代码生成。内容包括：书库（有阅读进度、生词，含复习状态和机器翻译释义）、一本含公式和表格的 EPUB（`formulas.epub`）、`alice.epub`、一本 TXT（`verse.txt`）、一组设置。
 - 每个夹具都要迁移到当前版本并完成重建，检查：现行模型能加载；进度和生词仍指向原来那个词；设置的取值不变。
-- 迁移链检查：`DataVersion.chain` 里每对相邻版本都恰好有一个步骤且首尾相接；`SettingsKeys.all` 与当前快照一致。
+- 迁移链检查：`DataVersion.chain` 里每对相邻版本都恰好有一个步骤且首尾相接，只有最后一项可以是 `next`；开发版数据 `X+next` 的排序与在链上的位置正确；`SettingsKeys.all` 与当前快照一致。
 - 中断与失败：日志恢复能完成替换；某一步抛错时原文件不变；数据版本比应用新时不读不写；从备份重新迁移能完整复现。
 
-## 4. v0.2.0 的第一个迁移步骤 `Migration_0_1_0_to_0_2_0`
+## 4. v0.1.0 之后的第一个迁移步骤（开发中为 `Migration_0_1_0_to_Next`）
 
 - 书库：`version` 2 → 3。每本书增加 `contentFile`，取值为 `"content.json"`；其余字段不变。
 - 设置：键名集中到 `SettingsKeys.swift` 一处定义，视图里不再直接写字符串。这次没有改名，所以不需要迁移设置。
@@ -123,7 +128,7 @@ App Store 本身不能装旧版本，只有通过 iosign 等方式侧载时才�
 | 区块 | 内容 |
 |---|---|
 | 版本 | 应用版本；数据版本 |
-| 上次升级 | 时间、0.1.0 → 0.2.0、结果（成功 / 失败及原因）；“升级历史”推入完整记录 |
+| 上次升级 | 时间、0.1.0 → 0.2.0（开发版为 0.1.0+next）、结果（成功 / 失败及原因）；“升级历史”推入完整记录 |
 | 正文更新 | 进行中：“正在更新 3/12：《Alice's Adventures in Wonderland》”，配进度条；完成：“全部书籍已是最新”；失败：列出书名和原因，配“重试”按钮；不能更新的书（没有原书内容）单独列出并说明原因 |
 | 备份 | 迁移前的备份占用多少空间；可以手动清理 |
 | 仅开发版 | “从备份重新迁移”：用备份恢复到迁移前，再重跑一遍迁移链 |
@@ -132,10 +137,10 @@ App Store 本身不能装旧版本，只有通过 iosign 等方式侧载时才�
 
 ## 6. 发布流程
 
-`Tools/app_release.py` 增加检查：
-- **prepare**：若本次版本还没有开启新的迁移步骤，校验上一版夹具已存在，并自动生成新版本的空快照、空迁移步骤并追加到 `DataVersion.chain`；若开发中已开启该版本的迁移步骤则直接沿用。
-- **check**：核对 `DataVersion.chain`、快照文件、迁移步骤文件、已合并的 git `v*` tag 以及所有先前版本的 `AppData/<版本>.bundle` 夹具一致；如果当前步骤要求重建正文，`--require-notes` 要求发布说明“升级与兼容”一节写明已导入的书会自动更新。
-- **fixture**（发布后）：在新 tag 上运行 `python3 Tools/app_release.py fixture` 生成并提交 `ReadlingTests/Fixtures/AppData/<版本>.bundle`。
+`Tools/app_release.py` 与数据版本相关的部分（见 3.2）：
+- **prepare <版本>**：把 `next` 改名为该版本（快照、步骤、所有引用、`chain`），和 `project.pbxproj` 一起定下版本号。若 `chain` 末端还是上一个已发布版本（发布后没有开启 `next`），先校验上一版夹具存在，再补一个空快照和空步骤。
+- **check**：核对 `DataVersion.chain`、快照文件、迁移步骤文件、已合并的 git `v*` tag 以及所有已发布版本的 `AppData/<版本>.bundle` 夹具一致。`chain` 以 `next` 结尾时，`project.pbxproj` 必须是 `next` 前面的版本；传入 tag 时，`chain` 末端必须已经是该版本。如果当前步骤要求重建正文，`--require-notes` 要求发布说明“升级与兼容”一节写明已导入的书会自动更新。
+- **post-release [tag]**（发布后）：要求 HEAD 就是该 tag 且已跟踪文件没有改动，用 tag 上的代码生成 `ReadlingTests/Fixtures/AppData/<版本>.bundle`（已存在则沿用），然后开启 `next`。生成的文件提交到 `main`。
 
 在 AGENTS.md 的“约定”里加一条简短规则，指向本文。
 

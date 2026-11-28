@@ -42,7 +42,7 @@ final class LibraryStore {
     @ObservationIgnored private var rebuildWorker: Task<Void, Never>?
 
     static let reviewIntervals: [Double] = [1, 2, 4, 7, 15, 30] // days
-    /// The `version` of `library.json` this app writes (see `V0_2_0.Library`).
+    /// The `version` of `library.json` this app writes (see `VNext.Library`).
     nonisolated static let libraryVersion = 3
 
     private struct Snapshot: Codable {
@@ -527,7 +527,7 @@ final class LibraryStore {
     }
 
     /// Reading-text files that the libraries set aside by the last migration point to. A library from before
-    /// v0.2.0 names none; its books read `content.json`.
+    /// vNext names none; its books read `content.json`.
     private func backedUpContentFiles(of id: UUID) -> Set<String> {
         struct Saved: Decodable {
             struct Book: Decodable { var id: UUID; var contentFile: String? }

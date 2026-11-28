@@ -24,7 +24,7 @@ iOS 英文阅读器（SwiftUI，iOS 26，Xcode 26.3+）。离线 EPUB/TXT 导入
 - `ReadlingTests/` 单元测试（`Fixtures/alice.epub`、`Fixtures/formulas.epub`、`Fixtures/verse.txt`，以及各已发布版本的真实数据夹具 `Fixtures/AppData/<版本>.bundle`）
 - `ReadlingUITests/` UI 测试：`SelectionUITests.m` 在四种翻页模式下翻页前后长按选词，要求弹出单词卡、点按后关闭，另有长按拖选多行、要求单词卡显示译文；`PagingUITests.m` 在仿真/平移/覆盖模式下连发快速滑动和点按（重叠的手势，跨章节），每轮后要求正常翻页逐页落地。用 XCUIAutomation 的私有事件合成（`XCSynthesizedEventRecord`），因为 XCUIElement 的手势会等应用空闲、无法重叠；该 API 不可用时测试会跳过。应用侧钩子：启动参数 `-freshLibrary` 使用临时空书库；`-dictionaryManifestURL <url>` 改用别的词典清单（可配合本地 `python3 -m http.server` 试下载）；分页正文的 `accessibilityIdentifier` 为 `page 章/总章 页/本章总页`；`-translationEngine stub` 改用返回固定文本的测试翻译引擎
 - `Tools/build-dictionary.py` 从 ECDICT CSV 生成词典包，每条只归入一个包（core/extended/八个学科/names），输出 `OUT_DIR/dictionary-<包>.sqlite`：`python3 -I Tools/build-dictionary.py ecdict.csv Readling/Resources core`（只重建内置核心包），不写包名则生成全部
-- `Tools/app_release.py` App 发布（prepare / check / build / fixture），以 `Readling.xcodeproj/project.pbxproj` 为版本唯一事实来源（SemVer，首次发版前为 `0.0.0`），校验 `DataVersion` 迁移链与数据夹具一致，推送 `v*.*.*` tag 后由 `.github/workflows/publish-app.yml` 在 `macos-26` 上跑测试、打未签名 `Readling-<版本>.ipa` 与 `SHA256SUMS` 并创建 GitHub Release
+- `Tools/app_release.py` App 发布（prepare / check / build / post-release），以 `Readling.xcodeproj/project.pbxproj` 为版本唯一事实来源（SemVer，首次发版前为 `0.0.0`），校验 `DataVersion` 迁移链与数据夹具一致，推送 `v*.*.*` tag 后由 `.github/workflows/publish-app.yml` 在 `macos-26` 上跑测试、打未签名 `Readling-<版本>.ipa` 与 `SHA256SUMS` 并创建 GitHub Release
 - `Tools/dictionary_release.py` 词典发布（prepare / check / build / adopt），`Dictionaries/release.json` 记录版本与固定的 ECDICT 数据源，`docs/releases/` 放发布说明；推送 `dict-*` tag 后由 `.github/workflows/publish-dictionaries.yml` 构建并创建 Release。`.env` 的 `RELEASE_AI_PROVIDER=codex|claude` 让两者的 prepare 调用本机 CLI 起草发布说明（`Tools/release_ai.py`，模板见 `.env.example`）。流程见 `docs/release.md`，脚本测试：`python3 -m unittest discover -s Tools/tests`
 - `docs/screenshots/` 模拟器截图
 - `docs/data-versioning.md` 本机数据版本、相邻版本迁移链与后台正文重建的设计与规范
@@ -63,12 +63,12 @@ xcodebuild -project Readling.xcodeproj -scheme Readling \
 ## 数据版本与迁移（必读，v0.1.0 起已有用户数据）
 完整规范见 `docs/data-versioning.md`，改动任何会存到本机的东西之前先读。要点：
 - 数据分两类：**源数据**（书库 `library.json`、原书 `book.json`/`docs/`/`res/`、UserDefaults 设置、Keychain）丢了找不回，只能由迁移步骤转换；**派生数据**（`content.json` 正文、章节信息、封面缩略图）能从源数据算出来，不做格式转换，由迁移步骤要求重建。
-- 整个数据目录只有一个版本：最后迁移到的 app 版本（`data-version.json`）。迁移只在相邻的已发布版本之间进行（`Persistence/Migrations/Migration_<旧>_to_<新>.swift`，每对相邻版本恰好一个，没变化也写空步骤），跨版本升级依次执行，不写捷径步骤。
+- 整个数据目录只有一个版本：最后迁移到的 app 版本（`data-version.json`）。迁移只在相邻的已发布版本之间进行（`Persistence/Migrations/Migration_<旧>_to_<新>.swift`，每对相邻版本恰好一个，没变化也写空步骤），跨版本升级依次执行，不写捷径步骤。开发中的下一版还没有版本号，写作 `next`（`VNext`、`Migration_<上一版>_to_Next`），到 `prepare` 时才改成实际版本号，不要自己猜版本号。
 - 步骤是纯函数，只用 `Persistence/Snapshots/` 里冻结的旧结构，不引用现行模型。版本发布后它的快照和步骤冻结，不再修改、不再删除；开发中的那一步可以随意改。
 - 以下改动都要写进开发中版本的迁移步骤：改了源数据的结构（包括新增字段、改 UserDefaults 键名或取值的含义）；改了导入/章节构建的输出（`BookImporter`、`BookBuilder`、`ChapterText`、`MathML`、`PlainTextLayout`、`ChapterLayout.split` 等），这时要在步骤里要求重建正文。测试会拿正文输出和上一个已发布版本的夹具比较，输出变了却没要求重建就会失败。
 - UserDefaults 键名只在 `SettingsKeys.swift` 定义；键名一旦发布就不再挪作他用。存下来的枚举要容忍未知值。
 - 不允许带数据降级：数据版本比应用新时不读不写，只提示安装新版本。
-- 每个已发布版本的真实数据目录是测试夹具（`ReadlingTests/Fixtures/AppData/<版本>.bundle`），每次测试都要能从每个夹具迁移到当前版本；发版后在新 tag 上运行 `python3 Tools/app_release.py fixture` 生成该版本的夹具。
+- 每个已发布版本的真实数据目录是测试夹具（`ReadlingTests/Fixtures/AppData/<版本>.bundle`），每次测试都要能从每个夹具迁移到当前版本；发版后在新 tag 上运行 `python3 Tools/app_release.py post-release` 生成该版本的夹具，并开启下一版。
 
 ## 设计原则（教训）
 分页正文曾为求改动最小，让整章共享一条 `NSLayoutManager` 容器链、每页借一个容器显示；后来改为选中查词时才发现 UIKit 不允许这种页面被选择，只能层层打补丁。由此：

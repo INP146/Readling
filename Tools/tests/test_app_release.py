@@ -264,27 +264,33 @@ class DataVersioningReleaseTests(unittest.TestCase):
         setup_minimal_repo(self.root)
         pbx = self.root / app_release.PBXPROJ
         pbx.write_text(app_release.write_project_version(REAL_PBXPROJ, "0.1.0", 1), encoding="utf-8")
-        # Seed DataVersion at 0.1.0 -> 0.2.0 (rebuilding content) with a 0.1.0 fixture.
+        # Seed DataVersion in development after 0.1.0: 0.1.0 -> next (rebuilding content), with a 0.1.0 fixture.
         (self.root / app_release.SNAPSHOTS_DIR).mkdir(parents=True)
         (self.root / app_release.MIGRATIONS_DIR).mkdir(parents=True)
         (self.root / app_release.SNAPSHOTS_DIR / "V0_1_0.swift").write_text("enum V0_1_0 { static let settingsKeys: [String: String] = [:] }\n", encoding="utf-8")
-        (self.root / app_release.SNAPSHOTS_DIR / "V0_2_0.swift").write_text("enum V0_2_0 { static let settingsKeys = V0_1_0.settingsKeys }\n", encoding="utf-8")
-        (self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_0_2_0.swift").write_text(
-            'enum Migration_0_1_0_to_0_2_0 {\n'
-            '    static let migration = Migration(from: "0.1.0", to: "0.2.0") { ctx in ctx.requestRebuild(.content) }\n'
+        (self.root / app_release.SNAPSHOTS_DIR / "VNext.swift").write_text(
+            "/// The data vNext writes.\nenum VNext { static let settingsKeys = V0_1_0.settingsKeys }\n", encoding="utf-8")
+        (self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_Next.swift").write_text(
+            'enum Migration_0_1_0_to_Next {\n'
+            '    static let migration = Migration(from: "0.1.0", to: "next") { ctx in\n'
+            '        _ = VNext.settingsKeys\n'
+            '        ctx.requestRebuild(.content)\n'
+            '    }\n'
             '}\n',
             encoding="utf-8",
         )
         (self.root / app_release.DATA_VERSION_FILE).write_text(
             'enum DataVersion {\n'
-            '    static let chain = ["0.1.0", "0.2.0"]\n'
+            '    static let chain = ["0.1.0", "next"]\n'
+            '    static let next = "next"\n'
             '    static let migrations: [Migration] = [\n'
-            '        Migration_0_1_0_to_0_2_0.migration,\n'
+            '        Migration_0_1_0_to_Next.migration,\n'
             '    ]\n'
-            '    static let currentSettingsKeys = V0_2_0.settingsKeys\n'
+            '    static let currentSettingsKeys = VNext.settingsKeys\n'
             '}\n',
             encoding="utf-8",
         )
+        (self.root / "Readling/LibraryStore.swift").write_text("// see `VNext.Library`, written since vNext\n", encoding="utf-8")
         self._write_fixture("0.1.0")
 
     def tearDown(self):
@@ -302,38 +308,94 @@ class DataVersioningReleaseTests(unittest.TestCase):
         self.assertTrue(version)
         self.assertGreaterEqual(build, 1)
 
-    def test_prepare_with_open_migration_enforces_rebuild_note_and_scaffolds_next_empty_step(self):
-        self.assertEqual(app_release.check(self.root), ("0.1.0", 1))
-        # Cannot prepare 0.1.1 when DataVersion.chain already opened 0.2.0.
-        with self.assertRaisesRegex(ValueError, "当前末端版本为 0.2.0"):
-            app_release.prepare(self.root, "0.1.1")
+    def _post_release(self, version: str) -> list[Path]:
+        def fake_fixture(root, target, *, destination):
+            self._write_fixture(target)
+            return app_release.fixture_bundle_path(root, target)
+        with mock.patch.object(app_release, "ensure_head_is_tag"):
+            return app_release.post_release(self.root, f"v{version}", make_fixture=fake_fixture)
 
-        # Prepare 0.2.0: uses existing Migration_0_1_0_to_0_2_0 and includes rebuild notice in template.
-        app_release.prepare(self.root, "0.2.0")
-        notes = app_release.notes_path(self.root, "0.2.0")
+    def test_prepare_names_next_and_post_release_opens_it_again(self):
+        self.assertEqual(app_release.check(self.root), ("0.1.0", 1))
+        # Tag checks fail while the version in development has no number yet.
+        with self.assertRaisesRegex(ValueError, "请先运行 prepare 0.2.0"):
+            app_release.check(self.root, "v0.2.0")
+        # The project keeps the last release's number while `next` is in development.
+        pbx = self.root / app_release.PBXPROJ
+        pbx.write_text(app_release.write_project_version(REAL_PBXPROJ, "0.2.0", 2), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "应为 0.1.0"):
+            app_release.check(self.root)
+        pbx.write_text(app_release.write_project_version(REAL_PBXPROJ, "0.1.0", 1), encoding="utf-8")
+
+        # The number is decided at prepare: any version above 0.1.0 works, here 0.1.1.
+        planned = app_release.prepare(self.root, "0.1.1", dry_run=True)
+        self.assertFalse(app_release.notes_path(self.root, "0.1.1").exists())
+        self.assertIn(self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_Next.swift", planned)
+        app_release.prepare(self.root, "0.1.1")
+        notes = app_release.notes_path(self.root, "0.1.1")
         self.assertIn("自动更新正文", notes.read_text(encoding="utf-8"))
         complete_notes(notes)
-        self.assertEqual(app_release.check(self.root, "v0.2.0", require_notes=True), ("0.2.0", 2))
+        self.assertEqual(app_release.check(self.root, "v0.1.1", require_notes=True), ("0.1.1", 2))
+        chain, migs, keys_snap = app_release.read_data_version(self.root)
+        self.assertEqual(chain, ["0.1.0", "0.1.1"])
+        self.assertEqual(migs, ["Migration_0_1_0_to_0_1_1"])
+        self.assertEqual(keys_snap, "V0_1_1")
+        self.assertFalse((self.root / app_release.SNAPSHOTS_DIR / "VNext.swift").exists())
+        self.assertFalse((self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_Next.swift").exists())
+        step = (self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_0_to_0_1_1.swift").read_text(encoding="utf-8")
+        self.assertIn('Migration(from: "0.1.0", to: "0.1.1")', step)
+        self.assertIn("V0_1_1.settingsKeys", step)
+        self.assertEqual((self.root / app_release.SNAPSHOTS_DIR / "V0_1_1.swift").read_text(encoding="utf-8"),
+                         "/// The data v0.1.1 writes.\nenum V0_1_1 { static let settingsKeys = V0_1_0.settingsKeys }\n")
+        self.assertEqual((self.root / "Readling/LibraryStore.swift").read_text(encoding="utf-8"),
+                         "// see `V0_1_1.Library`, written since v0.1.1\n")
+        self.assertIn('static let next = "next"', (self.root / app_release.DATA_VERSION_FILE).read_text(encoding="utf-8"))
 
-        # Removing the rebuild notice fails check --require-notes because Migration_0_1_0_to_0_2_0 requests .content.
+        # Removing the rebuild notice fails check --require-notes because the step requests .content.
         stripped = notes.read_text(encoding="utf-8").replace("首次打开后，已导入的书籍会在后台自动更新正文，阅读进度与生词位置会自动换算。", "")
         notes.write_text(stripped, encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "要求重建正文"):
-            app_release.check(self.root, "v0.2.0", require_notes=True)
+            app_release.check(self.root, "v0.1.1", require_notes=True)
+        complete_notes(notes)
 
-        # Next release 0.2.1 requires 0.2.0.bundle to exist first, then scaffolds empty step & snapshot.
-        with self.assertRaisesRegex(ValueError, "0.2.0.bundle"):
-            app_release.prepare(self.root, "0.2.1")
-        self._write_fixture("0.2.0")
-        modified = app_release.prepare(self.root, "0.2.1")
-        self.assertEqual(len(modified), 5)
-        complete_notes(app_release.notes_path(self.root, "0.2.1"))
-        self.assertEqual(app_release.check(self.root, "v0.2.1", require_notes=True), ("0.2.1", 3))
+        # After tagging: freeze the fixture and open `next` with an empty step.
+        self._post_release("0.1.1")
+        self.assertTrue(app_release.fixture_is_complete(app_release.fixture_bundle_path(self.root, "0.1.1")))
         chain, migs, keys_snap = app_release.read_data_version(self.root)
-        self.assertEqual(chain, ["0.1.0", "0.2.0", "0.2.1"])
-        self.assertEqual(migs, ["Migration_0_1_0_to_0_2_0", "Migration_0_2_0_to_0_2_1"])
-        self.assertEqual(keys_snap, "V0_2_1")
+        self.assertEqual(chain, ["0.1.0", "0.1.1", "next"])
+        self.assertEqual(migs, ["Migration_0_1_0_to_0_1_1", "Migration_0_1_1_to_Next"])
+        self.assertEqual(keys_snap, "VNext")
+        self.assertEqual(app_release.check(self.root), ("0.1.1", 2))
+        # Running it again is refused: the release is no longer at the end of the chain.
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            self._post_release("0.1.1")
 
+        # The empty step gets the number of the next release.
+        app_release.prepare(self.root, "0.2.0")
+        complete_notes(app_release.notes_path(self.root, "0.2.0"))
+        self.assertEqual(app_release.check(self.root, "v0.2.0", require_notes=True), ("0.2.0", 3))
+        chain, migs, _ = app_release.read_data_version(self.root)
+        self.assertEqual(chain, ["0.1.0", "0.1.1", "0.2.0"])
+        self.assertEqual(migs, ["Migration_0_1_0_to_0_1_1", "Migration_0_1_1_to_0_2_0"])
+
+    def test_prepare_without_post_release_scaffolds_an_empty_step(self):
+        app_release.prepare(self.root, "0.1.1")
+        complete_notes(app_release.notes_path(self.root, "0.1.1"))
+        self._post_release("0.1.1")
+        # Undo the opened `next`, as if post-release had only frozen the fixture.
+        dv = self.root / app_release.DATA_VERSION_FILE
+        dv.write_text(dv.read_text(encoding="utf-8")
+                      .replace(', "next"]', "]")
+                      .replace("        Migration_0_1_1_to_Next.migration,\n", "")
+                      .replace("VNext.settingsKeys", "V0_1_1.settingsKeys"), encoding="utf-8")
+        (self.root / app_release.SNAPSHOTS_DIR / "VNext.swift").unlink()
+        (self.root / app_release.MIGRATIONS_DIR / "Migration_0_1_1_to_Next.swift").unlink()
+        self.assertEqual(app_release.check(self.root), ("0.1.1", 2))
+        app_release.prepare(self.root, "0.1.2")
+        complete_notes(app_release.notes_path(self.root, "0.1.2"))
+        self.assertEqual(app_release.check(self.root, "v0.1.2", require_notes=True), ("0.1.2", 3))
+        _, migs, _ = app_release.read_data_version(self.root)
+        self.assertEqual(migs, ["Migration_0_1_0_to_0_1_1", "Migration_0_1_1_to_0_1_2"])
 
 if __name__ == "__main__":
     unittest.main()

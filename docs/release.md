@@ -24,6 +24,8 @@ RELEASE_AI_TIMEOUT_SECONDS=600
 
 ## App
 
+**开发期间**：版本号保持在上一个已发布版本，数据迁移写在 `next` 这一步（见 `docs/data-versioning.md` 3.2）。下一版的版本号到 `prepare` 时才定，可以根据这一版实际改了什么决定发 patch 还是 minor。
+
 **版本与唯一事实来源**：采用 SemVer（如 `0.1.0`、预发布 `0.1.0-rc1`），tag 为 `v<版本>`（如 `v0.1.0`、`v0.1.0-rc1`）。版本号只保存在 `Readling.xcodeproj/project.pbxproj` 中 `Readling` target 的 `MARKETING_VERSION` 与 `CURRENT_PROJECT_VERSION`（Debug 与 Release 始终保持一致）：
 
 - 首次发布前工程保持未发布基线 `0.0.0`（Build `1`）。
@@ -34,10 +36,10 @@ RELEASE_AI_TIMEOUT_SECONDS=600
 
 | 命令 | 作用 |
 |---|---|
-| `prepare <版本> [--dry-run] [--base-tag <tag>]` | 校验当前工程与内置词典一致且新版本更高；若尚未为新版本创建数据迁移步骤，校验上一版数据夹具存在并自动生成空快照与空迁移步骤（见 `docs/data-versioning.md`）；起草 `docs/releases/v<版本>.md`（成功后再更新 `project.pbxproj` 与迁移文件）。比较基准默认是上一个 app 版本的 tag（如 `v0.1.0-rc1`），首版默认按全仓起草。`--dry-run` 只检查配置与基准 tag、列出将修改的文件，不调用模型也不写文件。 |
+| `prepare <版本> [--dry-run] [--base-tag <tag>]` | 校验当前工程与内置词典一致且新版本更高；把开发中的数据迁移步骤 `next` 命名为该版本（`VNext`、`Migration_…_to_Next` 及其引用改名，见 `docs/data-versioning.md` 3.2；若发布后没有开启 `next`，则补一个空步骤）；起草 `docs/releases/v<版本>.md`（成功后再更新 `project.pbxproj` 与迁移文件）。比较基准默认是上一个 app 版本的 tag（如 `v0.1.0-rc1`），首版默认按全仓起草。`--dry-run` 只检查配置与基准 tag、列出将修改的文件，不调用模型也不写文件。 |
 | `check [tag] [--require-notes]` | 核对 `project.pbxproj`（Debug/Release 一致、Bundle ID、语法）、`DataVersion` 迁移链与历史数据夹具、以及内置词典（调用 `dictionary_release.check`）；传入 `tag` 时要求与工程版本和迁移链末端一致且不为 `0.0.0`；`--require-notes` 要求发布说明已完成（标题一致、填写了“主要变更 / 安装与重签 / 升级与兼容”、不含 `RELEASE_TODO`，且若迁移要求重建正文须写明书籍自动更新）。 |
 | `build [--allow-unreleased]` | 在 macOS 上用 `xcodebuild` 编译无签名的 Release 真机包 `Readling.app`，核对产物 `Info.plist` 的版本号、Build 号、Bundle ID 以及包内 `dictionary-core.sqlite` 版本，打包为逐字节可复现的 `build/app/Readling-<版本>.ipa`（保留可执行权限与符号链接）和 `SHA256SUMS`。`--allow-unreleased` 供日常 CI 在 `0.0.0` 基线阶段验证编译与打包链路。 |
-| `fixture [tag] [--destination <模拟器>]` | 发布并打完 tag 后，用该版本的代码生成冻结的真实数据夹具 `ReadlingTests/Fixtures/AppData/<版本>.bundle`（已存在的夹具不会覆盖）。 |
+| `post-release [tag] [--destination <模拟器>]` | 打完 tag 后在该 tag 上运行（要求 HEAD 即 tag、已跟踪文件无改动）：用该版本的代码生成冻结的真实数据夹具 `ReadlingTests/Fixtures/AppData/<版本>.bundle`（已存在则沿用），再开启下一版的空迁移步骤 `next`。版本号此时不用定，留到下一次 `prepare`。 |
 
 **Actions**：
 
@@ -57,9 +59,9 @@ git add -A && git commit -m "Release v0.1.0"
 git push origin main
 git tag -a v0.1.0 -m "Readling v0.1.0"
 git push origin v0.1.0
-# 生成并提交该版本的测试数据夹具（供后续版本的迁移测试使用）
-python3 Tools/app_release.py fixture v0.1.0
-git add ReadlingTests/Fixtures/AppData/0.1.0.bundle && git commit -m "Add v0.1.0 data fixture" && git push origin main
+# 收尾：冻结该版本的数据夹具，开启下一版的迁移步骤 next
+python3 Tools/app_release.py post-release v0.1.0
+git add -A && git commit -m "Open development after v0.1.0" && git push origin main
 ```
 
 首次引入发布流程时，先把脚本、测试和 workflows 提交到 `main`（此时版本仍为 `0.0.0`，不会触发发布）；确认就绪后再按上面步骤准备首个版本。
