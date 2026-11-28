@@ -8,7 +8,7 @@ enum DataVersion {
     /// Every released version in order, then `next` while the release after them is in development. A version's
     /// entry, snapshot and migration step are frozen once it is released. `next` gets its number only when
     /// `Tools/app_release.py prepare` names the release; `post-release` opens it again after tagging.
-    static let chain = ["0.1.0", "next"]
+    static let chain = ["0.1.0", "0.2.0"]
 
     /// The entry of `chain` for the version in development, whose number isn't decided yet.
     static let next = "next"
@@ -19,14 +19,14 @@ enum DataVersion {
 
     /// One step per neighbouring pair of `chain`, in order.
     static let migrations: [Migration] = [
-        Migration_0_1_0_to_Next.migration,
+        Migration_0_1_0_to_0_2_0.migration,
     ]
 
     /// The version before data-version.json existed: v0.1.0 wrote only library.json.
     static let first = "0.1.0"
 
     /// Settings keys of the current snapshot, checked against `SettingsKeys.all` in tests.
-    static let currentSettingsKeys = VNext.settingsKeys
+    static let currentSettingsKeys = V0_2_0.settingsKeys
 
     /// The version written for `chain[index]`.
     static func label(at index: Int, in chain: [String]) -> String {
