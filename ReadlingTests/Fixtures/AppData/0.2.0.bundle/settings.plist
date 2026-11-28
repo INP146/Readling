@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>aiEndpoints</key>
+	<data>
+	W3siYmFzZVVSTCI6Imh0dHBzOlwvXC9leGFtcGxlLmNvbVwvdjEiLCJtb2RlbCI6ImZp
+	eHR1cmUtbW9kZWwiLCJpZCI6IjJEOEJDQzVFLTg2MjAtNDREOS04ODU3LUYxQzkwM0NB
+	RDlBRSIsIm5hbWUiOiJGaXh0dXJlIiwiZm9ybWF0Ijoib3BlbkFJIn1d
+	</data>
+	<key>dictionaryAccent</key>
+	<string>en-GB</string>
+	<key>dictionaryExpandByDefault</key>
+	<true/>
+	<key>lastReadBookID</key>
+	<string>0A4EA858-E7CA-4262-BDBF-17163F5E1185</string>
+	<key>readerAppearance</key>
+	<string>dark</string>
+	<key>readerAutoSpeed</key>
+	<integer>4</integer>
+	<key>readerBackdrop</key>
+	<string>linen</string>
+	<key>readerDayTheme</key>
+	<string>paper</string>
+	<key>readerEyeCare</key>
+	<true/>
+	<key>readerFont</key>
+	<real>22</real>
+	<key>readerKeepAwake</key>
+	<true/>
+	<key>readerLineSpacing</key>
+	<real>1.5</real>
+	<key>readerMargin</key>
+	<real>30</real>
+	<key>readerNightTheme</key>
+	<string>night</string>
+	<key>readerPageTurn</key>
+	<string>curl</string>
+	<key>readerParagraphSpacing</key>
+	<real>1</real>
+	<key>readerTypeface</key>
+	<string>georgia</string>
+	<key>translationAutomatic</key>
+	<false/>
+	<key>translationDeepLAddress</key>
+	<string>https://api-free.deepl.com</string>
+	<key>translationEngine</key>
+	<string>2D8BCC5E-8620-44D9-8857-F1C903CAD9AE</string>
+	<key>translationPromptTranslate</key>
+	<string>Translate into Chinese: {text}</string>
+</dict>
+</plist>
