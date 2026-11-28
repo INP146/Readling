@@ -135,7 +135,9 @@ class AppReleaseLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "双引号"):
             app_release.check(self.root)
 
-        mismatched = REAL_PBXPROJ.replace("CURRENT_PROJECT_VERSION = 1;", "CURRENT_PROJECT_VERSION = 2;", 1)
+        # Start from a known build number, whatever the real project is at, then make Debug and Release disagree.
+        mismatched = app_release.write_project_version(REAL_PBXPROJ, "0.0.0", 1).replace(
+            "CURRENT_PROJECT_VERSION = 1;", "CURRENT_PROJECT_VERSION = 2;", 1)
         pbx_path.write_text(mismatched, encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "不一致"):
             app_release.check(self.root)
